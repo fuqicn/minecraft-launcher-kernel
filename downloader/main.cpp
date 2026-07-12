@@ -145,12 +145,11 @@ static void print_help(void) {
 static int download_file_with_progress(const char *url, const char *output_path,
     const char *sha1, long size, const char *label)
 {
-    (void)sha1; (void)size;
     const char *fname = strrchr(output_path, '/');
     if (!fname) fname = strrchr(output_path, '\\');
     if (fname) fname++; else fname = output_path;
     mc_info("[%s] %s...", label, fname);
-    int r = mc_qt_download_file(url, output_path, nullptr, 0, g_timeout_ms);
+    int r = mc_qt_download_file(url, output_path, sha1, size, g_timeout_ms);
     if (r)
         mc_info("[%s] %s: OK", label, fname);
     else
@@ -303,9 +302,18 @@ static int download_libraries(McVersion *v, const char *mc_dir, DownloadPool &po
                     lib->sha1[0] && mc_stricmp(actual, lib->sha1) == 0)
                     continue;
             }
+            // Build the download URL.
+            // lib->url may be a full artifact URL (modern format, ends with .jar)
+            // or a Maven base URL (legacy format, no .jar suffix).
             char lib_url[2048];
-            mc_library_resolve_url(lib->name, lib->url, lib_url, sizeof(lib_url));
-            if (!lib_url[0]) continue;
+            size_t url_len = strlen(lib->url);
+            if (url_len > 4 && memcmp(lib->url + url_len - 4, ".jar", 4) == 0) {
+                strncpy(lib_url, lib->url, sizeof(lib_url) - 1);
+                lib_url[sizeof(lib_url) - 1] = '\0';
+            } else {
+                mc_library_resolve_url(lib->name, lib->url[0] ? lib->url : nullptr, lib_url, sizeof(lib_url));
+                if (!lib_url[0]) continue;
+            }
             char primary[2048], fallback[2048];
             translate_url(lib_url, primary, sizeof(primary));
             fallback[0] = '\0';
@@ -333,8 +341,14 @@ static int download_libraries(McVersion *v, const char *mc_dir, DownloadPool &po
             mc_path_join(libraries_dir, rel, local_path, sizeof(local_path));
             if (mc_path_exists(local_path)) { continue; }
             char lib_url[2048];
-            mc_library_resolve_url(lib->name, lib->url, lib_url, sizeof(lib_url));
-            if (!lib_url[0]) continue;
+            size_t url_len = strlen(lib->url);
+            if (url_len > 4 && memcmp(lib->url + url_len - 4, ".jar", 4) == 0) {
+                strncpy(lib_url, lib->url, sizeof(lib_url) - 1);
+                lib_url[sizeof(lib_url) - 1] = '\0';
+            } else {
+                mc_library_resolve_url(lib->name, lib->url[0] ? lib->url : nullptr, lib_url, sizeof(lib_url));
+                if (!lib_url[0]) continue;
+            }
             char primary[2048], fallback[2048];
             translate_url(lib_url, primary, sizeof(primary));
             fallback[0] = '\0';
