@@ -221,10 +221,12 @@ static void build_jvm_args(QStringList &args, McVersion *v,
     }
 
     // Classpath
-    bool use_legacy_cp = (strstr(v->main_class, "net.minecraft.launchwrapper.") != nullptr);
+    // Java 8 doesn't support -p (module path), always use -cp
+    // Java 9+ uses -p for modern BootstrapLauncher (Forge 1.17+)
+    bool java_8_or_older = (v->java_major_version > 0 && v->java_major_version <= 8);
+    bool launchwrapper_main = (strstr(v->main_class, "net.minecraft.launchwrapper.") != nullptr);
 
-    if (!use_legacy_cp) {
-        // Modern: use -p (module path) for Forge 1.17+ BootstrapLauncher
+    if (!java_8_or_older && !launchwrapper_main) {
         args << "-DlegacyClassPath.file=" + QString::fromUtf8(classpath);
         args << "-p" << QString::fromUtf8(classpath);
     } else {
@@ -266,8 +268,12 @@ static void build_jvm_args(QStringList &args, McVersion *v,
 static void build_game_args(QStringList &args, McVersion *v,
     const char *username, const char *uuid_str,
     const char *access_token, const char *user_type,
-    const char *version_type)
+    const char *version_type, const char *mc_dir)
 {
+    // Build paths for asset root and game directory
+    char assets_root[1024];
+    mc_path_join(mc_dir, "assets", assets_root, sizeof(assets_root));
+
     // Try extracting game arguments from raw_json (modern format)
     int used_modern = 0;
     if (v->raw_json) {
@@ -291,9 +297,9 @@ static void build_game_args(QStringList &args, McVersion *v,
                         while ((p = s.find("${version_name}")) != std::string::npos)
                             s.replace(p, 15, v->id);
                         while ((p = s.find("${assets_root}")) != std::string::npos)
-                            s.replace(p, 14, "");
+                            s.replace(p, 14, assets_root);
                         while ((p = s.find("${game_directory}")) != std::string::npos)
-                            s.replace(p, 17, "");
+                            s.replace(p, 17, mc_dir);
                         while ((p = s.find("${assets_index_name}")) != std::string::npos)
                             s.replace(p, 20, v->asset_index.id);
                         args << QString::fromUtf8(s.c_str());
@@ -319,9 +325,9 @@ static void build_game_args(QStringList &args, McVersion *v,
         while ((p = str.find("${version_name}")) != std::string::npos)
             str.replace(p, 15, v->id);
         while ((p = str.find("${assets_root}")) != std::string::npos)
-            str.replace(p, 14, "");
+            str.replace(p, 14, assets_root);
         while ((p = str.find("${game_directory}")) != std::string::npos)
-            str.replace(p, 17, "");
+            str.replace(p, 17, mc_dir);
         while ((p = str.find("${version_type}")) != std::string::npos)
             str.replace(p, 14, version_type);
         while ((p = str.find("${assets_index_name}")) != std::string::npos)
@@ -329,7 +335,7 @@ static void build_game_args(QStringList &args, McVersion *v,
         while ((p = str.find("${user_properties}")) != std::string::npos)
             str.replace(p, 18, "{}");
         while ((p = str.find("${natives_directory}")) != std::string::npos)
-            str.replace(p, 21, "");
+            str.replace(p, 21, mc_dir);
 
         // Split by spaces respecting quotes
         std::string current;
@@ -527,7 +533,7 @@ int main(int argc, char **argv) {
     args.append(QString::fromUtf8(v->main_class));
 
     build_game_args(args, v,
-        g_player_name, uuid_str, access_token, user_type, v->type);
+        g_player_name, uuid_str, access_token, user_type, v->type, g_mc_dir);
 
     mc_info("Launching %s...", v->id);
 
