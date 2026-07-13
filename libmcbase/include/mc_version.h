@@ -1,7 +1,8 @@
 #ifndef MC_VERSION_H
 #define MC_VERSION_H
 
-#include "mc_json.h"
+#include <QJsonObject>
+#include <QJsonValue>
 
 #define MC_MAX_LIBRARIES 1024
 #define MC_MAX_ARGUMENTS 256
@@ -14,6 +15,9 @@ typedef struct {
     long size;
     int is_natives;
     char natives_key[64];
+    char classifier_url[512];
+    char classifier_sha1[64];
+    long classifier_size;
     char extract_exclude[8][64];
     int exclude_count;
     int is_required;
@@ -48,9 +52,9 @@ typedef struct {
     long server_size;
     char logging_client_url[512];
     char logging_client_sha1[64];
-    McJson *raw_json;
     char source_url[512];
     int is_loaded;
+    QJsonObject raw_json;
 } McVersion;
 
 void mc_version_init(McVersion *v);
@@ -62,7 +66,7 @@ int mc_version_fetch_by_id_mirror(McVersion *v, const char *version_id, const ch
 void mc_version_free(McVersion *v);
 
 typedef int (*McRuleEvalFunc)(const char *os_name, const char *os_arch, const char *os_version);
-int mc_version_evaluate_rules(McJson *rules_node);
+int mc_version_evaluate_rules(const QJsonValue &rules_node);
 
 const char *mc_platform_get(void);
 void mc_platform_set(const char *platform);

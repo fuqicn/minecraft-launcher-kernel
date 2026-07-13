@@ -1,7 +1,8 @@
 #include "mc_asset.h"
 #include "mc_http.h"
-#include "mc_json.h"
 #include "mc_path.h"
+#include <QJsonDocument>
+#include <QJsonObject>
 #include "mc_str.h"
 #include "mc_log.h"
 #include <cstring>
@@ -13,32 +14,28 @@
 int mc_asset_index_parse(McAssetIndex *idx, const char *json_data) {
     if (!idx || !json_data) return 0;
     memset(idx, 0, sizeof(McAssetIndex));
-    McJson *j = mc_json_parse(json_data);
-    if (!j || j->type != MC_JSON_OBJECT) { mc_json_free(j); return 0; }
-    idx->is_virtual = mc_json_get_bool(j, "virtual", 0);
-    idx->map_to_resources = mc_json_get_bool(j, "map_to_resources", 0);
-    McJson *objects = mc_json_get(j, "objects");
-    if (!objects || objects->type != MC_JSON_OBJECT) { mc_json_free(j); return 0; }
-    int count = 0;
-    const McJson *c = objects->child;
-    while (c) { count++; c = c->next; }
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(json_data));
+    if (doc.isNull() || !doc.isObject()) return 0;
+    QJsonObject obj = doc.object();
+    idx->is_virtual = obj.value("virtual").toBool(false);
+    idx->map_to_resources = obj.value("map_to_resources").toBool(false);
+    QJsonValue objectsVal = obj.value("objects");
+    if (!objectsVal.isObject()) return 0;
+    QJsonObject objectsObj = objectsVal.toObject();
+    int count = objectsObj.size();
     idx->objects = (McAssetObject *)calloc(count, sizeof(McAssetObject));
-    if (!idx->objects) { mc_json_free(j); return 0; }
+    if (!idx->objects) return 0;
     idx->count = 0;
-    c = objects->child;
-    while (c) {
-        if (c->key) {
-            strncpy(idx->objects[idx->count].virtual_path, c->key,
-                    sizeof(idx->objects[idx->count].virtual_path) - 1);
-            const char *hash = mc_json_get_string(c, "hash", "");
-            strncpy(idx->objects[idx->count].hash, hash,
-                    sizeof(idx->objects[idx->count].hash) - 1);
-            idx->objects[idx->count].size = (long)mc_json_get_number(c, "size", 0);
-            idx->count++;
-        }
-        c = c->next;
+    for (auto it = objectsObj.begin(); it != objectsObj.end(); ++it) {
+        strncpy(idx->objects[idx->count].virtual_path, it.key().toUtf8().constData(),
+                sizeof(idx->objects[idx->count].virtual_path) - 1);
+        QJsonObject o = it.value().toObject();
+        const QString hash = o.value("hash").toString();
+        strncpy(idx->objects[idx->count].hash, hash.toUtf8().constData(),
+                sizeof(idx->objects[idx->count].hash) - 1);
+        idx->objects[idx->count].size = (long)o.value("size").toDouble(0);
+        idx->count++;
     }
-    mc_json_free(j);
     return 1;
 }
 

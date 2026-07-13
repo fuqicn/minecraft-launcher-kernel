@@ -190,9 +190,11 @@ static int download_version_json(McVersion *v, const char *version_id, const cha
     mc_path_mkdir_p(ver_dir);
     char json_path[MC_PATH_MAX];
     snprintf(json_path, sizeof(json_path), "%s/%s.json", ver_dir, v->id);
-    if (v->raw_json) {
-        char *json_str = mc_json_stringify(v->raw_json);
-        if (json_str) { FILE *f = fopen(json_path, "w"); if (f) { fputs(json_str, f); fclose(f); } free(json_str); }
+    if (!v->raw_json.isEmpty()) {
+        QJsonDocument doc(v->raw_json);
+        QByteArray json_bytes = doc.toJson(QJsonDocument::Indented);
+        FILE *f = fopen(json_path, "wb");
+        if (f) { fwrite(json_bytes.constData(), 1, json_bytes.size(), f); fclose(f); }
     }
     mc_info("Version JSON saved: %s/%s.json", ver_dir, v->id);
     return 1;
@@ -263,14 +265,15 @@ static int download_libraries(McVersion *v, const char *mc_dir, DownloadPool &po
 
     // Also process inherited version's libraries if present
     McVersion *base_v = v;
-    McVersion base_buf;
+    McVersion *base_buf = nullptr;
     int has_base = 0;
     if (v->inherits_from[0]) {
-        mc_version_init(&base_buf);
+        base_buf = (McVersion*)malloc(sizeof(McVersion));
+        if (base_buf) mc_version_init(base_buf);
         char base_json_path[MC_PATH_MAX];
         snprintf(base_json_path, sizeof(base_json_path), "%s/versions/%s/%s.json", mc_dir, v->inherits_from, v->inherits_from);
-        if (mc_path_exists(base_json_path) && mc_version_parse_file(&base_buf, base_json_path)) {
-            base_v = &base_buf;
+        if (base_buf && mc_path_exists(base_json_path) && mc_version_parse_file(base_buf, base_json_path)) {
+            base_v = base_buf;
             has_base = 1;
         } else {
             char url[512], translated[512];
@@ -289,8 +292,11 @@ static int download_libraries(McVersion *v, const char *mc_dir, DownloadPool &po
         McLibrary *lib = &base_v->libraries[i];
         if (!lib->is_required) continue;
 
-        // Resolve JAR
-        {
+        // For pure-native library entries (new-style, no separate classifier_url),
+        // the artifact IS the native JAR, handled by the natives block below.
+        // For non-natives and old-style natives (with classifier_url), download
+        // the Java artifact JAR normally.
+        if (!lib->is_natives || lib->classifier_url[0]) {
             char rel[MC_PATH_MAX];
             mc_library_resolve_path(lib->name, rel, sizeof(rel));
             if (!rel[0]) continue;
@@ -332,8 +338,8 @@ static int download_libraries(McVersion *v, const char *mc_dir, DownloadPool &po
             works.push_back(std::move(w));
         }
 
-        // Resolve natives if present
-        if (lib->is_natives && lib->natives_key[0]) {
+        // Resolve natives if present (old-style with natives_key, or new-style with classifier in name)
+        if (lib->is_natives && (lib->natives_key[0] || !lib->classifier_url[0])) {
             char rel[MC_PATH_MAX];
             mc_library_natives_path(lib->name, lib->natives_key, rel, sizeof(rel));
             if (!rel[0]) continue;
@@ -341,13 +347,20 @@ static int download_libraries(McVersion *v, const char *mc_dir, DownloadPool &po
             mc_path_join(libraries_dir, rel, local_path, sizeof(local_path));
             if (mc_path_exists(local_path)) { continue; }
             char lib_url[2048];
-            size_t url_len = strlen(lib->url);
-            if (url_len > 4 && memcmp(lib->url + url_len - 4, ".jar", 4) == 0) {
-                strncpy(lib_url, lib->url, sizeof(lib_url) - 1);
+            const char *classifier_url = lib->classifier_url[0] ? lib->classifier_url : nullptr;
+            if (classifier_url) {
+                strncpy(lib_url, classifier_url, sizeof(lib_url) - 1);
                 lib_url[sizeof(lib_url) - 1] = '\0';
             } else {
-                mc_library_resolve_url(lib->name, lib->url[0] ? lib->url : nullptr, lib_url, sizeof(lib_url));
-                if (!lib_url[0]) continue;
+                // For new-style native entries, lib->url is the full native JAR URL
+                size_t url_len = strlen(lib->url);
+                if (url_len > 4 && memcmp(lib->url + url_len - 4, ".jar", 4) == 0) {
+                    strncpy(lib_url, lib->url, sizeof(lib_url) - 1);
+                    lib_url[sizeof(lib_url) - 1] = '\0';
+                } else {
+                    mc_library_resolve_url(lib->name, lib->url[0] ? lib->url : nullptr, lib_url, sizeof(lib_url));
+                    if (!lib_url[0]) continue;
+                }
             }
             char primary[2048], fallback[2048];
             translate_url(lib_url, primary, sizeof(primary));
@@ -361,8 +374,8 @@ static int download_libraries(McVersion *v, const char *mc_dir, DownloadPool &po
             w.url = primary;
             w.fallback_url = fallback;
             w.output_path = local_path;
-            w.expected_sha1 = lib->sha1;
-            w.expected_size = lib->size;
+            w.expected_sha1 = lib->classifier_sha1[0] ? lib->classifier_sha1 : lib->sha1;
+            w.expected_size = lib->classifier_size ? lib->classifier_size : lib->size;
             works.push_back(std::move(w));
         }
     }
@@ -372,17 +385,21 @@ static int download_libraries(McVersion *v, const char *mc_dir, DownloadPool &po
     for (auto &w : works) { if (w.success) ok++; else fail++; }
     mc_info("Libraries: %d ok, %d skipped, %d failed", ok, skip, fail);
 
-    if (has_base == 1) mc_version_free(&base_buf);
+    if (has_base == 1) { mc_version_free(base_buf); free(base_buf); }
     else if (has_base == 2) { mc_version_free(base_v); free(base_v); }
 
     return fail == 0;
 }
 
 static int download_natives(McVersion *v, const char *mc_dir, DownloadPool &pool) {
+    mc_info("download_natives: entering, mc_dir=%s, library_count=%d", mc_dir, v->library_count);
+
     // First download all native library JARs
+    mc_info("download_natives: calling download_libraries...");
     if (!download_libraries(v, mc_dir, pool)) {
         mc_warn("Some native libraries failed to download");
     }
+    mc_info("download_natives: download_libraries done");
 
     // Extract native libraries from downloaded JARs
     char libraries_dir[MC_PATH_MAX];
@@ -390,44 +407,53 @@ static int download_natives(McVersion *v, const char *mc_dir, DownloadPool &pool
     char natives_dir[MC_PATH_MAX];
     snprintf(natives_dir, sizeof(natives_dir), "%s/natives-%s", mc_dir, v->id);
     mc_path_mkdir_p(natives_dir);
+    mc_info("download_natives: libraries_dir=%s, natives_dir=%s", libraries_dir, natives_dir);
 
     // Get the effective version (use inherits_from if this version has no natives of its own)
     McVersion *base_v = v;
-    McVersion base_buf;
+    McVersion *base_buf = nullptr;
     int has_base = 0;
     if (v->inherits_from[0]) {
         // Check if this version has native libraries, if not use base
         int has_natives = 0;
         for (int i = 0; i < v->library_count; i++)
             if (v->libraries[i].is_natives) { has_natives = 1; break; }
+        mc_info("download_natives: inherits_from=%s, has_natives=%d", v->inherits_from, has_natives);
         if (!has_natives) {
-            mc_version_init(&base_buf);
+            base_buf = (McVersion*)malloc(sizeof(McVersion));
+            if (base_buf) mc_version_init(base_buf);
             char base_json_path[MC_PATH_MAX];
             snprintf(base_json_path, sizeof(base_json_path), "%s/versions/%s/%s.json", mc_dir, v->inherits_from, v->inherits_from);
-            if (mc_path_exists(base_json_path) && mc_version_parse_file(&base_buf, base_json_path)) {
-                base_v = &base_buf;
+            if (base_buf && mc_path_exists(base_json_path) && mc_version_parse_file(base_buf, base_json_path)) {
+                base_v = base_buf;
                 has_base = 1;
+                mc_info("download_natives: loaded base version, library_count=%d", base_v->library_count);
             }
         }
     }
 
+    mc_info("download_natives: starting extraction loop, base_v->library_count=%d", base_v->library_count);
+    int extracted = 0;
     for (int i = 0; i < base_v->library_count; i++) {
         McLibrary *lib = &base_v->libraries[i];
+        mc_info("download_natives: library[%d] name=%s is_required=%d is_natives=%d", i, lib->name, lib->is_required, lib->is_natives);
         if (!lib->is_required || !lib->is_natives) continue;
 
         char rel[MC_PATH_MAX];
         mc_library_natives_path(lib->name, lib->natives_key, rel, sizeof(rel));
-        if (!rel[0]) continue;
+        if (!rel[0]) { mc_info("download_natives: no natives_path resolved"); continue; }
         char jar_path[MC_PATH_MAX];
         mc_path_join(libraries_dir, rel, jar_path, sizeof(jar_path));
+        mc_info("download_natives: checking jar_path=%s, exists=%d", jar_path, mc_path_exists(jar_path));
         if (!mc_path_exists(jar_path)) continue;
 
         mc_info("Extracting natives from %s", rel);
         mc_zip_extract(jar_path, natives_dir);
+        extracted++;
     }
 
-    if (has_base) mc_version_free(&base_buf);
-    mc_info("Natives extracted to %s", natives_dir);
+    if (has_base) { mc_version_free(base_buf); free(base_buf); }
+    mc_info("Natives extracted to %s (%d jars processed)", natives_dir, extracted);
     return 1;
 }
 

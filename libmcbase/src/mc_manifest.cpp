@@ -1,6 +1,9 @@
 #include "mc_manifest.h"
 #include "mc_http.h"
-#include "mc_json.h"
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonParseError>
 #include "mc_path.h"
 #include "mc_str.h"
 #include "mc_log.h"
@@ -56,46 +59,56 @@ static long long parse_mojang_time(const char *s) {
 }
 
 static int parse_manifest(const char *data, McManifest *m) {
-    McJson *j = mc_json_parse(data);
-    if (!j || j->type != MC_JSON_OBJECT) { mc_json_free(j); return 0; }
-    const char *lr = mc_json_get_string(j, "latest.release", nullptr);
-    if (lr) strncpy(m->latest_release, lr, sizeof(m->latest_release) - 1);
-    const char *ls = mc_json_get_string(j, "latest.snapshot", nullptr);
-    if (ls) strncpy(m->latest_snapshot, ls, sizeof(m->latest_snapshot) - 1);
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(data), &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return 0;
+    QJsonObject root = doc.object();
 
-    McJson *latest = mc_json_get(j, "latest");
-    if (latest) {
-        const char *rl = mc_json_get_string(latest, "release", nullptr);
-        if (rl) strncpy(m->latest_release, rl, sizeof(m->latest_release) - 1);
-        const char *sn = mc_json_get_string(latest, "snapshot", nullptr);
-        if (sn) strncpy(m->latest_snapshot, sn, sizeof(m->latest_snapshot) - 1);
+    QJsonValue lr = root.value("latest.release");
+    if (lr.isString()) {
+        QByteArray ba = lr.toString().toLatin1();
+        strncpy(m->latest_release, ba.constData(), sizeof(m->latest_release) - 1);
+    }
+    QJsonValue ls = root.value("latest.snapshot");
+    if (ls.isString()) {
+        QByteArray ba = ls.toString().toLatin1();
+        strncpy(m->latest_snapshot, ba.constData(), sizeof(m->latest_snapshot) - 1);
     }
 
-    McJson *versions = mc_json_get(j, "versions");
-    if (!versions || versions->type != MC_JSON_ARRAY) { mc_json_free(j); return 0; }
+    QJsonValue latestVal = root.value("latest");
+    if (latestVal.isObject()) {
+        QJsonObject latest = latestVal.toObject();
+        QString rl = latest.value("release").toString();
+        if (!rl.isEmpty()) strncpy(m->latest_release, rl.toLatin1().constData(), sizeof(m->latest_release) - 1);
+        QString sn = latest.value("snapshot").toString();
+        if (!sn.isEmpty()) strncpy(m->latest_snapshot, sn.toLatin1().constData(), sizeof(m->latest_snapshot) - 1);
+    }
+
+    QJsonArray versions = root.value("versions").toArray();
+    if (versions.isEmpty()) return 0;
 
     m->count = 0;
-    int n = mc_json_array_length(versions);
+    int n = versions.size();
     if (n > MC_MANIFEST_MAX_VERSIONS) n = MC_MANIFEST_MAX_VERSIONS;
 
     for (int i = 0; i < n; i++) {
-        McJson *v = mc_json_get_array_item(versions, i);
-        if (!v) continue;
+        QJsonObject v = versions[i].toObject();
+        if (v.isEmpty()) continue;
         McVersionEntry *e = &m->entries[m->count];
-        const char *id = mc_json_get_string(v, "id", "");
-        strncpy(e->id, id, sizeof(e->id) - 1);
-        const char *type = mc_json_get_string(v, "type", "");
-        strncpy(e->type, type, sizeof(e->type) - 1);
-        const char *url = mc_json_get_string(v, "url", "");
-        strncpy(e->url, url, sizeof(e->url) - 1);
-        const char *sha1 = mc_json_get_string(v, "sha1", "");
-        strncpy(e->sha1, sha1, sizeof(e->sha1) - 1);
-        e->release_time = parse_mojang_time(mc_json_get_string(v, "releaseTime", ""));
-        e->modified_time = parse_mojang_time(mc_json_get_string(v, "time", ""));
+
+        QString id = v.value("id").toString();
+        strncpy(e->id, id.toLatin1().constData(), sizeof(e->id) - 1);
+        QString type = v.value("type").toString();
+        strncpy(e->type, type.toLatin1().constData(), sizeof(e->type) - 1);
+        QString url = v.value("url").toString();
+        strncpy(e->url, url.toLatin1().constData(), sizeof(e->url) - 1);
+        QString sha1 = v.value("sha1").toString();
+        strncpy(e->sha1, sha1.toLatin1().constData(), sizeof(e->sha1) - 1);
+        e->release_time = parse_mojang_time(v.value("releaseTime").toString().toLatin1().constData());
+        e->modified_time = parse_mojang_time(v.value("time").toString().toLatin1().constData());
         m->count++;
     }
     m->fetch_time = static_cast<long>(time(nullptr));
-    mc_json_free(j);
     return 1;
 }
 
@@ -178,41 +191,36 @@ int mc_manifest_save_cache(const McManifest *m) {
     if (!m || m->count == 0) return 0;
     char path[MC_PATH_MAX];
     if (!manifest_cache_path(path, sizeof(path))) return 0;
-    McJson *j = mc_json_create_object();
-    if (!j) return 0;
-    McJson *latest = mc_json_create_object();
-    mc_json_add_string(latest, "release", m->latest_release);
-    mc_json_add_string(latest, "snapshot", m->latest_snapshot);
-    mc_json_add_item(j, latest);
-    if (latest->key) free(latest->key);
-    latest->key = mc_strdup("latest");
-    McJson *versions = mc_json_create_array();
+
+    QJsonObject j;
+    QJsonObject latest;
+    latest["release"] = QString(m->latest_release);
+    latest["snapshot"] = QString(m->latest_snapshot);
+    j["latest"] = latest;
+
+    QJsonArray versions;
     for (int i = 0; i < m->count; i++) {
-        McJson *v = mc_json_create_object();
-        mc_json_add_string(v, "id", m->entries[i].id);
-        mc_json_add_string(v, "type", m->entries[i].type);
-        mc_json_add_string(v, "url", m->entries[i].url);
-        mc_json_add_string(v, "sha1", m->entries[i].sha1);
+        QJsonObject v;
+        v["id"] = QString(m->entries[i].id);
+        v["type"] = QString(m->entries[i].type);
+        v["url"] = QString(m->entries[i].url);
+        v["sha1"] = QString(m->entries[i].sha1);
         time_t rt = static_cast<time_t>(m->entries[i].release_time);
         struct tm *rtm = localtime(&rt);
-        if (rtm) { char buf[32]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S+00:00", rtm); mc_json_add_string(v, "releaseTime", buf); }
+        if (rtm) { char buf[32]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S+00:00", rtm); v["releaseTime"] = QString(buf); }
         time_t mt = static_cast<time_t>(m->entries[i].modified_time);
         struct tm *mtm = localtime(&mt);
-        if (mtm) { char buf[32]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S+00:00", mtm); mc_json_add_string(v, "time", buf); }
-        mc_json_add_item(versions, v);
+        if (mtm) { char buf[32]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S+00:00", mtm); v["time"] = QString(buf); }
+        versions.append(v);
     }
-    mc_json_add_item(j, versions);
-    if (versions->key) free(versions->key);
-    versions->key = mc_strdup("versions");
-    char *json_str = mc_json_stringify(j);
-    int ok = 0;
-    if (json_str) {
-        FILE *f = fopen(path, "w");
-        if (f) { fputs(json_str, f); fclose(f); ok = 1; }
-        free(json_str);
-    }
-    mc_json_free(j);
-    return ok;
+    j["versions"] = versions;
+
+    QByteArray json_bytes = QJsonDocument(j).toJson(QJsonDocument::Indented);
+    FILE *f = fopen(path, "w");
+    if (!f) return 0;
+    fwrite(json_bytes.constData(), 1, static_cast<size_t>(json_bytes.size()), f);
+    fclose(f);
+    return 1;
 }
 
 int mc_manifest_find(const McManifest *m, const char *id, McVersionEntry *out) {

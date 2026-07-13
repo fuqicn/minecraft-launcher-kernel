@@ -14,7 +14,7 @@
 #include <QtCore/QJsonArray>
 
 #define ARGBUF_SIZE 1048576
-#define MC_AUTH_TOKEN_SIZE 512
+#define MC_AUTH_TOKEN_SIZE 4096
 
 static char g_player_name[64] = "Player";
 static char g_mc_dir[MC_PATH_MAX] = ".";
@@ -129,7 +129,7 @@ static int build_classpath(char *buf, size_t buf_size, McVersion *v, const char 
     for (int i = 0; i < v->library_count; i++) {
         McLibrary *lib = &v->libraries[i];
         if (!lib->is_required) continue;
-        if (lib->is_natives) continue;
+        if (lib->is_natives && lib->classifier_url[0]) continue;
         char rel_path[MC_PATH_MAX];
         mc_library_resolve_path(lib->name, rel_path, sizeof(rel_path));
         if (!rel_path[0]) continue;
@@ -137,7 +137,9 @@ static int build_classpath(char *buf, size_t buf_size, McVersion *v, const char 
         char full[MC_PATH_MAX];
         mc_path_join(libraries_dir, rel_path, full, sizeof(full));
 
-            // Handle native classifiers: look for non-native JAR (strip natives classifier)
+            // For known native entries, keep the native JAR on classpath (LWJGL 3 needs it)
+            if (!lib->is_natives) {
+                // Handle native classifiers: look for non-native JAR (strip natives classifier)
             char alt_path[MC_PATH_MAX];
             mc_path_dirname(full, alt_path, sizeof(alt_path));
             const char *fname = mc_path_filename(full);
@@ -151,6 +153,7 @@ static int build_classpath(char *buf, size_t buf_size, McVersion *v, const char 
                 std::string alt_name = base + ext;
                 mc_path_join(alt_path, alt_name.c_str(), full, sizeof(full));
                 if (!mc_path_exists(full)) continue;
+            }
             }
 
         if (!mc_path_exists(full)) continue;
@@ -177,7 +180,7 @@ static int build_classpath(char *buf, size_t buf_size, McVersion *v, const char 
             for (int i = 0; i < base->library_count; i++) {
                 McLibrary *lib = &base->libraries[i];
                 if (!lib->is_required) continue;
-                if (lib->is_natives) continue;
+        if (lib->is_natives && lib->classifier_url[0]) continue;
                 char rel_path[MC_PATH_MAX];
                 mc_library_resolve_path(lib->name, rel_path, sizeof(rel_path));
                 if (!rel_path[0]) continue;
@@ -221,30 +224,24 @@ static void build_jvm_args(QStringList &args, McVersion *v,
     }
 
     // Classpath
-    // Java 8 doesn't support -p (module path), always use -cp
-    // Java 9+ uses -p for modern BootstrapLauncher (Forge 1.17+)
-    bool java_8_or_older = (v->java_major_version > 0 && v->java_major_version <= 8);
-    bool launchwrapper_main = (strstr(v->main_class, "net.minecraft.launchwrapper.") != nullptr);
-
-    if (!java_8_or_older && !launchwrapper_main) {
-        args << "-DlegacyClassPath.file=" + QString::fromUtf8(classpath);
-        args << "-p" << QString::fromUtf8(classpath);
-    } else {
-        args << "-cp" << QString::fromUtf8(classpath);
-    }
+    // Always use -cp (classpath). Module path (-p) causes Java 9+ module system
+    // to try deriving module names from jar filenames, which breaks jars named
+    // like "1.20.1.jar". The version JSON's arguments.jvm already supplies -cp.
+    args << "-DlegacyClassPath.file=" + QString::fromUtf8(classpath);
+    args << "-cp" << QString::fromUtf8(classpath);
 
     // Log4j patch
     args << "-Dlog4j2.formatMsgNoLookups=true";
 
     // Extract JVM arguments from raw_json if available (modern format)
-    if (v->raw_json) {
-        McJson *args_node = mc_json_get(v->raw_json, "arguments");
-        if (args_node) {
-            McJson *jvm = mc_json_get(args_node, "jvm");
-            if (jvm && jvm->type == MC_JSON_ARRAY) {
-                for (McJson *child = jvm->child; child; child = child->next) {
-                    if (child->type == MC_JSON_STRING && child->string_value) {
-                        std::string s(child->string_value);
+    if (!v->raw_json.isEmpty()) {
+        QJsonObject args_node = v->raw_json.value("arguments").toObject();
+        if (!args_node.isEmpty()) {
+            QJsonArray jvm = args_node.value("jvm").toArray();
+            if (!jvm.isEmpty()) {
+                for (int i = 0; i < jvm.size(); i++) {
+                    if (jvm[i].isString()) {
+                        std::string s(jvm[i].toString().toUtf8().constData());
                         size_t p;
                         while ((p = s.find("${natives_directory}")) != std::string::npos)
                             s.replace(p, 21, natives_dir);
@@ -276,24 +273,24 @@ static void build_game_args(QStringList &args, McVersion *v,
 
     // Try extracting game arguments from raw_json (modern format)
     int used_modern = 0;
-    if (v->raw_json) {
-        McJson *args_node = mc_json_get(v->raw_json, "arguments");
-        if (args_node) {
-            McJson *game = mc_json_get(args_node, "game");
-            if (game && game->type == MC_JSON_ARRAY) {
+    if (!v->raw_json.isEmpty()) {
+        QJsonObject args_node = v->raw_json.value("arguments").toObject();
+        if (!args_node.isEmpty()) {
+            QJsonArray game = args_node.value("game").toArray();
+            if (!game.isEmpty()) {
                 used_modern = 1;
-                for (McJson *child = game->child; child; child = child->next) {
-                    if (child->type == MC_JSON_STRING && child->string_value) {
-                        std::string s(child->string_value);
+                for (int i = 0; i < game.size(); i++) {
+                    if (game[i].isString()) {
+                        std::string s(game[i].toString().toUtf8().constData());
                         size_t p;
                         while ((p = s.find("${auth_player_name}")) != std::string::npos)
                             s.replace(p, 19, username);
                         while ((p = s.find("${auth_uuid}")) != std::string::npos)
-                            s.replace(p, 11, uuid_str);
+                            s.replace(p, 12, uuid_str);
                         while ((p = s.find("${auth_access_token}")) != std::string::npos)
                             s.replace(p, 20, access_token);
                         while ((p = s.find("${user_type}")) != std::string::npos)
-                            s.replace(p, 11, user_type);
+                            s.replace(p, 12, user_type);
                         while ((p = s.find("${version_name}")) != std::string::npos)
                             s.replace(p, 15, v->id);
                         while ((p = s.find("${assets_root}")) != std::string::npos)
@@ -302,6 +299,7 @@ static void build_game_args(QStringList &args, McVersion *v,
                             s.replace(p, 17, mc_dir);
                         while ((p = s.find("${assets_index_name}")) != std::string::npos)
                             s.replace(p, 20, v->asset_index.id);
+                        mc_debug("game arg: [%s] -> [%s]", game[i].toString().toUtf8().constData(), s.c_str());
                         args << QString::fromUtf8(s.c_str());
                     }
                 }
@@ -317,11 +315,11 @@ static void build_game_args(QStringList &args, McVersion *v,
         while ((p = str.find("${auth_player_name}")) != std::string::npos)
             str.replace(p, 19, username);
         while ((p = str.find("${auth_uuid}")) != std::string::npos)
-            str.replace(p, 11, uuid_str);
+            str.replace(p, 12, uuid_str);
         while ((p = str.find("${auth_access_token}")) != std::string::npos)
             str.replace(p, 20, access_token);
         while ((p = str.find("${user_type}")) != std::string::npos)
-            str.replace(p, 11, user_type);
+            str.replace(p, 12, user_type);
         while ((p = str.find("${version_name}")) != std::string::npos)
             str.replace(p, 15, v->id);
         while ((p = str.find("${assets_root}")) != std::string::npos)
@@ -377,9 +375,9 @@ static int load_session_json(const char *path,
 } while(0)
 
     GET_STR("uuid", uuid_out, (int)uuid_size);
-    GET_STR("access_token", token_out, (int)token_size);
+    GET_STR("accessToken", token_out, (int)token_size);
     GET_STR("name", name_out, (int)name_size);
-    GET_STR("user_type", user_type_out, (int)user_type_size);
+    GET_STR("userType", user_type_out, (int)user_type_size);
 
     return name_out[0] != '\0';
 }
@@ -501,7 +499,7 @@ int main(int argc, char **argv) {
             loaded_name, sizeof(loaded_name),
             user_type, sizeof(user_type)))
         {
-            mc_info("Loaded session for %s", loaded_name);
+            mc_debug("Loaded uuid=[%s] access_token(length=%zu) user_type=[%s]", uuid_str, strlen(access_token), user_type);
             if (!g_player_name[0] || strcmp(g_player_name, "Player") == 0)
                 strncpy(g_player_name, loaded_name, sizeof(g_player_name) - 1);
             is_online = 1;

@@ -1,7 +1,9 @@
 #ifndef MC_MANIFEST_H
 #define MC_MANIFEST_H
 
-#include "mc_json.h"
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 
 #define MC_VERSION_ID_MAX 64
 #define MC_MANIFEST_MAX_VERSIONS 2048

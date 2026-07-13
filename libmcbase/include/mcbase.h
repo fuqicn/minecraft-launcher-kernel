@@ -4,7 +4,6 @@
 #include "mc_str.h"
 #include "mc_path.h"
 #include "mc_log.h"
-#include "mc_json.h"
 #include "mc_hash.h"
 #include "mc_http.h"
 #include "mc_manifest.h"

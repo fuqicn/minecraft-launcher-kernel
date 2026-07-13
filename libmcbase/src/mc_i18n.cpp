@@ -1,5 +1,6 @@
 #include "mc_i18n.h"
-#include "mc_json.h"
+#include <QJsonDocument>
+#include <QJsonObject>
 #include "mc_path.h"
 #include <cstring>
 #include <cstdio>
@@ -7,7 +8,7 @@
 #include <windows.h>
 
 static char g_lang[16] = "";
-static McJson *g_table = NULL;
+static QJsonObject g_table;
 static int g_loaded = 0;
 
 static const char *detect_system_lang(void) {
@@ -27,6 +28,22 @@ static int has_file(const char *path) {
     return 1;
 }
 
+static QJsonObject parse_json_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return QJsonObject();
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    QByteArray data;
+    if (sz > 0) {
+        data.resize((int)sz);
+        fread(data.data(), 1, sz, f);
+    }
+    fclose(f);
+    QJsonDocument doc = QJsonDocument::fromJson(data);
+    return doc.isObject() ? doc.object() : QJsonObject();
+}
+
 static const char *lang_file_path(const char *lang) {
     static char path[1024];
     char exe_dir[1024];
@@ -39,7 +56,7 @@ static const char *lang_file_path(const char *lang) {
 }
 
 void mc_i18n_set(const char *lang) {
-    if (g_table) { mc_json_free(g_table); g_table = NULL; }
+    g_table = QJsonObject();
     g_loaded = 0;
     if (lang) {
         strncpy(g_lang, lang, sizeof(g_lang) - 1);
@@ -53,17 +70,21 @@ const char *mc_i18n(const char *key) {
     if (!g_loaded) {
         const char *lang = g_lang[0] ? g_lang : detect_system_lang();
         const char *path = lang_file_path(lang);
-        g_table = mc_json_parse_file(path);
-        if (!g_table) {
+        g_table = parse_json_file(path);
+        if (g_table.isEmpty()) {
             path = lang_file_path("en");
-            g_table = mc_json_parse_file(path);
+            g_table = parse_json_file(path);
         }
         g_loaded = 1;
     }
 
-    if (g_table) {
-        const char *val = mc_json_get_string(g_table, key, NULL);
-        if (val) return val;
+    if (!g_table.isEmpty()) {
+        QJsonValue val = g_table.value(QString::fromUtf8(key));
+        if (val.isString()) {
+            static QByteArray buf;
+            buf = val.toString().toUtf8();
+            return buf.constData();
+        }
     }
     return key;
 }

@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define MC_AUTH_TOKEN_SIZE 512
+#define MC_AUTH_TOKEN_SIZE 4096
 #define MC_AUTH_UUID_SIZE  40
 #define MC_AUTH_NAME_SIZE  64
 

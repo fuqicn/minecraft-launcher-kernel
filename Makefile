@@ -16,7 +16,6 @@ LIB_SRC_FILES = \
 	$(LIB_SRC)/mc_log.cpp \
 	$(LIB_SRC)/mc_str.cpp \
 	$(LIB_SRC)/mc_path.cpp \
-	$(LIB_SRC)/mc_json.cpp \
 	$(LIB_SRC)/mc_hash.cpp \
 	$(LIB_SRC)/mc_http.cpp \
 	$(LIB_SRC)/mc_zip.cpp \

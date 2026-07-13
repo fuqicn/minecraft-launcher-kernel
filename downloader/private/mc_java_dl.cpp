@@ -1,7 +1,10 @@
 #include "mc_java_dl.h"
 #include <mc_http.h>
-#include <mc_json.h>
 #include <mc_log.h>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonValue>
 #include <mc_str.h>
 #include <mc_download.h>
 #include <mc_version.h>
@@ -35,9 +38,14 @@ int mc_java_download_manifest(int major_version, const char *mirror, McJavaFileL
         return 0;
     }
 
-    McJson *root = mc_json_parse(resp->data);
+    QJsonParseError parseErr;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data), &parseErr);
     mc_http_response_free(resp);
-    if (!root) { mc_error("Failed to parse Java manifest JSON"); return 0; }
+    if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
+        mc_error("Failed to parse Java manifest JSON");
+        return 0;
+    }
+    QJsonObject root = doc.object();
 
     const char *version_key = "jre-legacy";
     if (major_version >= 21) version_key = "java-runtime-delta";
@@ -48,58 +56,59 @@ int mc_java_download_manifest(int major_version, const char *mirror, McJavaFileL
     const char *arch = mc_platform_arch_get();
     char plat_key[32];
     snprintf(plat_key, sizeof(plat_key), "%s-%s", plat, arch);
-    McJson *plat_obj = mc_json_get(root, plat_key);
-    if (!plat_obj) {
+    QJsonValue platVal = root.value(plat_key);
+    if (platVal.isUndefined()) {
         snprintf(plat_key, sizeof(plat_key), "%s-x64", plat);
-        plat_obj = mc_json_get(root, plat_key);
+        platVal = root.value(plat_key);
     }
-    if (!plat_obj) {
+    if (platVal.isUndefined()) {
         mc_error("No '%s' entry in Java manifest (tried: %s-x64, %s-%s)", plat, plat, plat, arch);
-        mc_json_free(root); return 0;
+        return 0;
     }
 
-    McJson *rt_array = mc_json_get(plat_obj, version_key);
-    if (!rt_array || rt_array->type != MC_JSON_ARRAY) {
-        if (plat_obj && plat_obj->type == MC_JSON_OBJECT) {
-            const char *key = nullptr;
-            McJson *val = nullptr;
-            if (mc_json_object_foreach(plat_obj, 0, &key, &val)) {
-                rt_array = val;
-                version_key = key;
+    QJsonValue rtVal = platVal.toObject().value(version_key);
+    if (rtVal.isUndefined() || !rtVal.isArray()) {
+        if (platVal.isObject()) {
+            QJsonObject platObj = platVal.toObject();
+            for (auto it = platObj.begin(); it != platObj.end(); ++it) {
+                rtVal = it.value();
+                version_key = it.key().toUtf8().constData();
+                break;
             }
         }
     }
-    if (!rt_array || rt_array->type != MC_JSON_ARRAY || !rt_array->child) {
+    if (rtVal.isUndefined() || !rtVal.isArray()) {
         mc_error("No Java runtime '%s' found in manifest", version_key);
-        mc_json_free(root);
         return 0;
     }
+    QJsonArray rtArr = rtVal.toArray();
 
-    McJson *rt_entry = mc_json_get_array_item(rt_array, 0);
-    if (!rt_entry) {
+    QJsonValue rtEntryVal = rtArr.at(0);
+    if (rtEntryVal.isUndefined()) {
         mc_error("Empty Java runtime array");
-        mc_json_free(root);
         return 0;
     }
+    QJsonObject rtEntryObj = rtEntryVal.toObject();
 
-    McJson *manifest = mc_json_get(rt_entry, "manifest");
-    if (!manifest) {
+    QJsonValue manifestVal = rtEntryObj.value("manifest");
+    if (manifestVal.isUndefined()) {
         mc_error("No manifest in Java runtime entry");
-        mc_json_free(root);
         return 0;
     }
-    const char *manifest_url = mc_json_get_string(manifest, "url", nullptr);
-    if (!manifest_url) {
+    QJsonObject manifestObj = manifestVal.toObject();
+    QString manifestUrl = manifestObj.value("url").toString();
+    if (manifestUrl.isNull()) {
         mc_error("No manifest URL in Java runtime entry");
-        mc_json_free(root);
         return 0;
     }
 
     char manifest_url_translated[2048];
-    strncpy(manifest_url_translated, manifest_url, sizeof(manifest_url_translated) - 1);
+    QByteArray manifestUrlUtf8 = manifestUrl.toUtf8();
+    strncpy(manifest_url_translated, manifestUrlUtf8.constData(), sizeof(manifest_url_translated) - 1);
+    manifest_url_translated[sizeof(manifest_url_translated) - 1] = '\0';
     if (mirror && strcmp(mirror, "mojang") != 0) {
         char translated[2048];
-        if (mc_download_translate_mojang_url(manifest_url, translated, sizeof(translated), mirror))
+        if (mc_download_translate_mojang_url(manifestUrlUtf8.constData(), translated, sizeof(translated), mirror))
             strncpy(manifest_url_translated, translated, sizeof(manifest_url_translated) - 1);
     }
     mc_http_init(&client);
@@ -108,49 +117,57 @@ int mc_java_download_manifest(int major_version, const char *mirror, McJavaFileL
     if (!resp || !resp->success || !resp->data) {
         mc_error("Failed to fetch Java runtime file manifest");
         if (resp) mc_http_response_free(resp);
-        mc_json_free(root);
         return 0;
     }
 
-    McJson *file_root = mc_json_parse(resp->data);
+    QJsonParseError fileParseErr;
+    QJsonDocument fileDoc = QJsonDocument::fromJson(QByteArray(resp->data), &fileParseErr);
     mc_http_response_free(resp);
-    if (!file_root) { mc_error("Failed to parse file manifest JSON"); mc_json_free(root); return 0; }
-
-    McJson *files = mc_json_get(file_root, "files");
-    if (!files || files->type != MC_JSON_OBJECT) {
-        mc_error("No files in Java runtime manifest");
-        mc_json_free(file_root);
-        mc_json_free(root);
+    if (fileParseErr.error != QJsonParseError::NoError || !fileDoc.isObject()) {
+        mc_error("Failed to parse file manifest JSON");
         return 0;
     }
+    QJsonObject fileRoot = fileDoc.object();
+
+    QJsonValue filesVal = fileRoot.value("files");
+    if (filesVal.isUndefined() || !filesVal.isObject()) {
+        mc_error("No files in Java runtime manifest");
+        return 0;
+    }
+    QJsonObject filesObj = filesVal.toObject();
 
     std::vector<McJavaFile> file_list;
-    for (McJson *entry = files->child; entry; entry = entry->next) {
-        if (!entry->key) continue;
-        const char *rel_path = entry->key;
+    for (auto it = filesObj.begin(); it != filesObj.end(); ++it) {
+        QByteArray relPathBa = it.key().toUtf8();
+        const char *rel_path = relPathBa.constData();
 
-        McJson *downloads = mc_json_get(entry, "downloads");
-        if (!downloads) continue;
-        McJson *raw = mc_json_get(downloads, "raw");
-        if (!raw) continue;
+        QJsonValue entryVal = it.value();
+        if (!entryVal.isObject()) continue;
 
-        const char *dl_url = mc_json_get_string(raw, "url", nullptr);
-        const char *dl_sha1 = mc_json_get_string(raw, "sha1", nullptr);
-        long dl_size = (long)mc_json_get_number(raw, "size", 0);
+        QJsonObject entryObj = entryVal.toObject();
+        QJsonValue downloadsVal = entryObj.value("downloads");
+        if (downloadsVal.isUndefined()) continue;
+        QJsonValue rawVal = downloadsVal.toObject().value("raw");
+        if (rawVal.isUndefined()) continue;
 
-        if (!dl_url || !dl_sha1) continue;
+        QJsonObject rawObj = rawVal.toObject();
+        QString dlUrl = rawObj.value("url").toString();
+        QString dlSha1 = rawObj.value("sha1").toString();
+        long dlSize = (long)rawObj.value("size").toDouble(0);
+
+        if (dlUrl.isNull() || dlSha1.isNull()) continue;
+
+        QByteArray dlUrlBa = dlUrl.toUtf8();
+        QByteArray dlSha1Ba = dlSha1.toUtf8();
 
         McJavaFile f;
         memset(&f, 0, sizeof(f));
-        strncpy(f.url, dl_url, sizeof(f.url) - 1);
+        strncpy(f.url, dlUrlBa.constData(), sizeof(f.url) - 1);
         strncpy(f.path, rel_path, sizeof(f.path) - 1);
-        strncpy(f.sha1, dl_sha1, sizeof(f.sha1) - 1);
-        f.size = dl_size;
+        strncpy(f.sha1, dlSha1Ba.constData(), sizeof(f.sha1) - 1);
+        f.size = dlSize;
         file_list.push_back(f);
     }
-
-    mc_json_free(file_root);
-    mc_json_free(root);
 
     if (file_list.empty()) { mc_error("No downloadable files in Java manifest"); return 0; }
 

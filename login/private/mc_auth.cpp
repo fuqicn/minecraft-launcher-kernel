@@ -1,5 +1,4 @@
 #include "mc_auth.h"
-#include "mc_json.h"
 #include "mc_http.h"
 #include "mc_log.h"
 #include <cstring>
@@ -60,27 +59,41 @@ static int do_auth_request(McAuthSession *session, const char *endpoint,
     int ok = 0;
     if (resp->success && resp->data) {
         mc_debug("[auth] response: %s", resp->data);
-        McJson *j = mc_json_parse(resp->data);
-        if (j) {
-            const char *err_msg = mc_json_get_string(j, "errorMessage", NULL);
-            if (err_msg) {
-                snprintf(session->error, sizeof(session->error), "%s", err_msg);
+        QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data));
+        if (doc.isObject()) {
+            QJsonObject jObj = doc.object();
+            QJsonValue errVal = jObj.value("errorMessage");
+            if (errVal.isString()) {
+                QByteArray errMsg = errVal.toString().toUtf8();
+                snprintf(session->error, sizeof(session->error), "%s", errMsg.constData());
             } else {
-                const char *at = mc_json_get_string(j, "accessToken", NULL);
-                const char *ct = mc_json_get_string(j, "clientToken", NULL);
-                if (at) strncpy(out_access_token, at, out_access_size - 1);
-                if (ct) strncpy(session->client_token, ct, sizeof(session->client_token) - 1);
+                QJsonValue atVal = jObj.value("accessToken");
+                QJsonValue ctVal = jObj.value("clientToken");
+                if (atVal.isString()) {
+                    QByteArray at = atVal.toString().toUtf8();
+                    strncpy(out_access_token, at.constData(), out_access_size - 1);
+                }
+                if (ctVal.isString()) {
+                    QByteArray ct = ctVal.toString().toUtf8();
+                    strncpy(session->client_token, ct.constData(), sizeof(session->client_token) - 1);
+                }
 
-                McJson *profile = mc_json_get(j, "selectedProfile");
-                if (profile) {
-                    const char *pid = mc_json_get_string(profile, "id", NULL);
-                    const char *pname = mc_json_get_string(profile, "name", NULL);
-                    if (pid) strncpy(out_uuid, pid, out_uuid_size - 1);
-                    if (pname) strncpy(out_name, pname, out_name_size - 1);
+                QJsonValue profileVal = jObj.value("selectedProfile");
+                if (profileVal.isObject()) {
+                    QJsonObject profile = profileVal.toObject();
+                    QJsonValue pidVal = profile.value("id");
+                    QJsonValue pnameVal = profile.value("name");
+                    if (pidVal.isString()) {
+                        QByteArray pid = pidVal.toString().toUtf8();
+                        strncpy(out_uuid, pid.constData(), out_uuid_size - 1);
+                    }
+                    if (pnameVal.isString()) {
+                        QByteArray pname = pnameVal.toString().toUtf8();
+                        strncpy(out_name, pname.constData(), out_name_size - 1);
+                    }
                 }
                 ok = 1;
             }
-            mc_json_free(j);
         } else {
             snprintf(session->error, sizeof(session->error), "Failed to parse JSON response");
         }
@@ -196,11 +209,14 @@ int mc_auth_validate(McAuthSession *session) {
     if (resp->success && resp->status_code == 204) {
         ok = 1;
     } else if (resp->data) {
-        McJson *j = mc_json_parse(resp->data);
-        if (j) {
-            const char *err = mc_json_get_string(j, "errorMessage", NULL);
-            if (err) snprintf(session->error, sizeof(session->error), "%s", err);
-            mc_json_free(j);
+        QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data));
+        if (doc.isObject()) {
+            QJsonObject jObj = doc.object();
+            QJsonValue errVal = jObj.value("errorMessage");
+            if (errVal.isString()) {
+                QByteArray err = errVal.toString().toUtf8();
+                snprintf(session->error, sizeof(session->error), "%s", err.constData());
+            }
         }
     } else {
         snprintf(session->error, sizeof(session->error), "HTTP %ld", resp->status_code);
@@ -253,31 +269,26 @@ int mc_auth_invalidate(McAuthSession *session) {
 int mc_auth_save(const McAuthSession *session, const char *path) {
     if (!session || !path) return 0;
 
-    McJson *j = mc_json_create_object();
-    if (!j) return 0;
+    QJsonObject j;
+    j["accessToken"] = QString(session->access_token);
+    j["clientToken"] = QString(session->client_token);
+    j["uuid"] = QString(session->uuid);
+    j["name"] = QString(session->name);
+    j["userType"] = QString(session->user_type);
+    j["isAuthenticated"] = (double)session->is_authenticated;
+    j["serverUrl"] = QString(session->server_url);
+    j["msaRefreshToken"] = QString(session->msa_refresh_token);
 
-    mc_json_add_string(j, "accessToken", session->access_token);
-    mc_json_add_string(j, "clientToken", session->client_token);
-    mc_json_add_string(j, "uuid", session->uuid);
-    mc_json_add_string(j, "name", session->name);
-    mc_json_add_string(j, "userType", session->user_type);
-    mc_json_add_number(j, "isAuthenticated", (double)session->is_authenticated);
-    mc_json_add_string(j, "serverUrl", session->server_url);
-    mc_json_add_string(j, "msaRefreshToken", session->msa_refresh_token);
+    QJsonDocument doc(j);
+    QByteArray jsonBytes = doc.toJson(QJsonDocument::Compact);
 
-    char *json_str = mc_json_stringify(j);
     int ok = 0;
-    if (json_str) {
-        QFile file(QString::fromUtf8(path));
-        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            QTextStream out(&file);
-            out << json_str;
-            file.close();
-            ok = 1;
-        }
-        free(json_str);
+    QFile file(QString::fromUtf8(path));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        file.write(jsonBytes);
+        file.close();
+        ok = 1;
     }
-    mc_json_free(j);
     return ok;
 }
 
@@ -294,26 +305,30 @@ int mc_auth_load(McAuthSession *session, const char *path) {
     data = in.readAll();
     file.close();
 
-    McJson *j = mc_json_parse(data.toUtf8().constData());
-    if (!j) return 0;
+    QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
+    if (!doc.isObject()) return 0;
 
-    const char *s;
-    if ((s = mc_json_get_string(j, "accessToken", NULL)) != NULL)
-        strncpy(session->access_token, s, sizeof(session->access_token) - 1);
-    if ((s = mc_json_get_string(j, "clientToken", NULL)) != NULL)
-        strncpy(session->client_token, s, sizeof(session->client_token) - 1);
-    if ((s = mc_json_get_string(j, "uuid", NULL)) != NULL)
-        strncpy(session->uuid, s, sizeof(session->uuid) - 1);
-    if ((s = mc_json_get_string(j, "name", NULL)) != NULL)
-        strncpy(session->name, s, sizeof(session->name) - 1);
-    if ((s = mc_json_get_string(j, "userType", NULL)) != NULL)
-        strncpy(session->user_type, s, sizeof(session->user_type) - 1);
-    if ((s = mc_json_get_string(j, "serverUrl", NULL)) != NULL)
-        strncpy(session->server_url, s, sizeof(session->server_url) - 1);
-    if ((s = mc_json_get_string(j, "msaRefreshToken", NULL)) != NULL)
-        strncpy(session->msa_refresh_token, s, sizeof(session->msa_refresh_token) - 1);
-    session->is_authenticated = (int)mc_json_get_number(j, "isAuthenticated", 0);
+    QJsonObject jObj = doc.object();
 
-    mc_json_free(j);
+    auto readStr = [&](const char *key, char *dest, size_t destSize) {
+        QJsonValue v = jObj.value(key);
+        if (v.isString()) {
+            QByteArray ba = v.toString().toUtf8();
+            strncpy(dest, ba.constData(), destSize - 1);
+        }
+    };
+
+    readStr("accessToken", session->access_token, sizeof(session->access_token));
+    readStr("clientToken", session->client_token, sizeof(session->client_token));
+    readStr("uuid", session->uuid, sizeof(session->uuid));
+    readStr("name", session->name, sizeof(session->name));
+    readStr("userType", session->user_type, sizeof(session->user_type));
+    readStr("serverUrl", session->server_url, sizeof(session->server_url));
+    readStr("msaRefreshToken", session->msa_refresh_token, sizeof(session->msa_refresh_token));
+
+    QJsonValue authVal = jObj.value("isAuthenticated");
+    if (authVal.isDouble())
+        session->is_authenticated = (int)authVal.toDouble();
+
     return session->is_authenticated;
 }

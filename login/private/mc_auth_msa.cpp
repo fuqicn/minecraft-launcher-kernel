@@ -1,5 +1,8 @@
 #include "mc_auth_msa.h"
-#include "mc_json.h"
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonValue>
 #include "mc_http.h"
 #include "mc_log.h"
 #include <cstring>
@@ -122,46 +125,40 @@ static int do_device_code_flow(char *msa_token, size_t msa_size,
         return 0;
     }
 
-    McJson *j = mc_json_parse(resp->data);
+    QJsonParseError json_err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data), &json_err);
     mc_http_response_free(resp);
-    if (!j) { mc_error("[MSA] Failed to parse device code response"); return 0; }
+    if (json_err.error != QJsonParseError::NoError) { mc_error("[MSA] Failed to parse device code response"); return 0; }
+    QJsonObject j = doc.object();
 
-    const char *user_code = mc_json_get_string(j, "user_code", NULL);
-    const char *device_code = mc_json_get_string(j, "device_code", NULL);
-    const char *verif_uri = mc_json_get_string(j, "verification_uri", NULL);
-    int interval = mc_json_get_int(j, "interval", 5);
+    QJsonValue user_code_val = j.value("user_code");
+    QJsonValue device_code_val = j.value("device_code");
+    QJsonValue verif_uri_val = j.value("verification_uri");
+    int interval = (int)j.value("interval").toDouble(5);
 
-    if (!user_code || !device_code || !verif_uri) {
-        const char *err = mc_json_get_string(j, "error", NULL);
-        mc_error("[MSA] Device code error: %s", err ? err : "incomplete response");
-        mc_json_free(j);
+    if (!user_code_val.isString() || !device_code_val.isString() || !verif_uri_val.isString()) {
+        QJsonValue err_val = j.value("error");
+        mc_error("[MSA] Device code error: %s", err_val.isString() ? err_val.toString().toUtf8().constData() : "incomplete response");
         return 0;
     }
 
-    // Copy before freeing JSON (strings point into JSON tree)
-    char saved_device_code[2048];
-    char saved_user_code[64];
-    char saved_verif_uri[512];
-    strncpy(saved_device_code, device_code, sizeof(saved_device_code) - 1);
-    strncpy(saved_user_code, user_code, sizeof(saved_user_code) - 1);
-    strncpy(saved_verif_uri, verif_uri, sizeof(saved_verif_uri) - 1);
+    QString saved_device_code = device_code_val.toString();
+    QString saved_user_code = user_code_val.toString();
+    QString saved_verif_uri = verif_uri_val.toString();
 
     // Step 2: Display to user and open browser
     mc_info("");
     mc_info("========================================");
     mc_info(" Microsoft Login");
     mc_info("========================================");
-    mc_info(" 1. Open: %s", saved_verif_uri);
-    mc_info(" 2. Enter code: %s (copied to clipboard)", saved_user_code);
+    mc_info(" 1. Open: %s", saved_verif_uri.toUtf8().constData());
+    mc_info(" 2. Enter code: %s (copied to clipboard)", saved_user_code.toUtf8().constData());
     mc_info("========================================");
     mc_info("");
 
-    copy_to_clipboard(saved_user_code);
-    QUrl verifUrl(QString::fromUtf8(saved_verif_uri));
+    copy_to_clipboard(saved_user_code.toUtf8().constData());
+    QUrl verifUrl(saved_verif_uri);
     open_url(verifUrl);
-
-    // Now safe to free JSON
-    mc_json_free(j);
 
     // Step 3: Poll for token
     mc_info("[MSA] Waiting for authentication...");
@@ -175,7 +172,7 @@ static int do_device_code_flow(char *msa_token, size_t msa_size,
 
         char poll_body[2048];
         char enc_dev_code[2048];
-        url_encode(saved_device_code, enc_dev_code, sizeof(enc_dev_code));
+        url_encode(saved_device_code.toUtf8().constData(), enc_dev_code, sizeof(enc_dev_code));
         snprintf(poll_body, sizeof(poll_body),
             "grant_type=device_code&client_id=%s&device_code=%s",
             MSA_CLIENT_ID, enc_dev_code);
@@ -189,37 +186,39 @@ static int do_device_code_flow(char *msa_token, size_t msa_size,
             continue;
         }
 
-        McJson *pj = mc_json_parse(poll_resp->data);
+        QJsonParseError poll_err;
+        QJsonDocument poll_doc = QJsonDocument::fromJson(QByteArray(poll_resp->data), &poll_err);
         mc_http_response_free(poll_resp);
-        if (!pj) continue;
+        if (poll_err.error != QJsonParseError::NoError) continue;
+        QJsonObject pj = poll_doc.object();
 
-        const char *err = mc_json_get_string(pj, "error", NULL);
-        if (err) {
-            if (strcmp(err, "authorization_pending") == 0) {
-                mc_json_free(pj);
+        QJsonValue err_val = pj.value("error");
+        if (err_val.isString()) {
+            QString err = err_val.toString();
+            if (err == "authorization_pending") {
                 continue;
             }
-            if (strcmp(err, "slow_down") == 0) {
+            if (err == "slow_down") {
                 interval += 5;
-                mc_json_free(pj);
                 continue;
             }
-            mc_error("[MSA] Auth error: %s", err);
-            mc_json_free(pj);
+            mc_error("[MSA] Auth error: %s", err.toUtf8().constData());
             return 0;
         }
 
-        const char *at = mc_json_get_string(pj, "access_token", NULL);
-        const char *rt = mc_json_get_string(pj, "refresh_token", NULL);
-        if (!at) {
+        QJsonValue at_val = pj.value("access_token");
+        QJsonValue rt_val = pj.value("refresh_token");
+        if (!at_val.isString()) {
             mc_error("[MSA] No access_token in device code response");
-            mc_json_free(pj);
             return 0;
         }
 
-        strncpy(msa_token, at, msa_size - 1);
-        if (rt) strncpy(refresh_token, rt, refresh_size - 1);
-        mc_json_free(pj);
+        QString at = at_val.toString();
+        strncpy(msa_token, at.toUtf8().constData(), msa_size - 1);
+        if (rt_val.isString()) {
+            QString rt = rt_val.toString();
+            strncpy(refresh_token, rt.toUtf8().constData(), refresh_size - 1);
+        }
         return 1;
     }
 
@@ -264,25 +263,34 @@ static char *xbl_authenticate(const char *msa_token, char *uhs, size_t uhs_size)
         return nullptr;
     }
 
-    McJson *j = mc_json_parse(resp->data);
+    QJsonParseError xbl_err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data), &xbl_err);
     mc_http_response_free(resp);
-    if (!j) { mc_error("[MSA] Failed to parse XBL response"); return nullptr; }
+    if (xbl_err.error != QJsonParseError::NoError) { mc_error("[MSA] Failed to parse XBL response"); return nullptr; }
+    QJsonObject j = doc.object();
 
-    const char *token = mc_json_get_string(j, "Token", NULL);
-    if (!token) { mc_error("[MSA] No XBL token"); mc_json_free(j); return nullptr; }
+    QJsonValue token_val = j.value("Token");
+    if (!token_val.isString()) { mc_error("[MSA] No XBL token"); return nullptr; }
+    QString token = token_val.toString();
 
-    McJson *claims = mc_json_get(j, "DisplayClaims");
-    McJson *xui = claims ? mc_json_get(claims, "xui") : nullptr;
-    if (xui && xui->type == MC_JSON_ARRAY) {
-        McJson *first = mc_json_get_array_item(xui, 0);
-        if (first) {
-            const char *uhs_val = mc_json_get_string(first, "uhs", NULL);
-            if (uhs_val) strncpy(uhs, uhs_val, uhs_size - 1);
+    QJsonValue claims = j.value("DisplayClaims");
+    if (claims.isObject()) {
+        QJsonValue xui = claims.toObject().value("xui");
+        if (xui.isArray()) {
+            QJsonArray xui_arr = xui.toArray();
+            if (!xui_arr.isEmpty()) {
+                QJsonValue first = xui_arr.at(0);
+                if (first.isObject()) {
+                    QJsonValue uhs_val = first.toObject().value("uhs");
+                    if (uhs_val.isString()) {
+                        strncpy(uhs, uhs_val.toString().toUtf8().constData(), uhs_size - 1);
+                    }
+                }
+            }
         }
     }
 
-    char *result = strdup(token);
-    mc_json_free(j);
+    char *result = strdup(token.toUtf8().constData());
     return result;
 }
 
@@ -311,22 +319,22 @@ static char *xsts_authenticate(const char *xbl_token) {
         return nullptr;
     }
 
-    McJson *j = mc_json_parse(resp->data);
+    QJsonParseError xsts_err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data), &xsts_err);
     mc_http_response_free(resp);
-    if (!j) { mc_error("[MSA] Failed to parse XSTS response"); return nullptr; }
+    if (xsts_err.error != QJsonParseError::NoError) { mc_error("[MSA] Failed to parse XSTS response"); return nullptr; }
+    QJsonObject j = doc.object();
 
-    const char *err = mc_json_get_string(j, "XErr", NULL);
-    if (err) {
-        mc_error("[MSA] XSTS error XErr=%s", err);
-        mc_json_free(j);
+    QJsonValue xerr_val = j.value("XErr");
+    if (xerr_val.isString()) {
+        mc_error("[MSA] XSTS error XErr=%s", xerr_val.toString().toUtf8().constData());
         return nullptr;
     }
 
-    const char *token = mc_json_get_string(j, "Token", NULL);
-    if (!token) { mc_error("[MSA] No XSTS token"); mc_json_free(j); return nullptr; }
+    QJsonValue token_val = j.value("Token");
+    if (!token_val.isString()) { mc_error("[MSA] No XSTS token"); return nullptr; }
 
-    char *result = strdup(token);
-    mc_json_free(j);
+    char *result = strdup(token_val.toString().toUtf8().constData());
     return result;
 }
 
@@ -353,18 +361,19 @@ static char *mc_login(const char *uhs, const char *xsts_token) {
 
     mc_debug("[MSA] MC login response: %.800s", resp->data);
 
-    McJson *j = mc_json_parse(resp->data);
+    QJsonParseError mc_err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data), &mc_err);
     mc_http_response_free(resp);
-    if (!j) { mc_error("[MSA] Failed to parse Minecraft login response"); return nullptr; }
+    if (mc_err.error != QJsonParseError::NoError) { mc_error("[MSA] Failed to parse Minecraft login response"); return nullptr; }
+    QJsonObject j = doc.object();
 
-    const char *token_type = mc_json_get_string(j, "token_type", NULL);
-    mc_debug("[MSA] MC login token_type: %s", token_type ? token_type : "(null)");
+    QJsonValue tt_val = j.value("token_type");
+    mc_debug("[MSA] MC login token_type: %s", tt_val.isString() ? tt_val.toString().toUtf8().constData() : "(null)");
 
-    const char *token = mc_json_get_string(j, "access_token", NULL);
-    if (!token) { mc_error("[MSA] No Minecraft access_token"); mc_json_free(j); return nullptr; }
+    QJsonValue token_val = j.value("access_token");
+    if (!token_val.isString()) { mc_error("[MSA] No Minecraft access_token"); return nullptr; }
 
-    char *result = strdup(token);
-    mc_json_free(j);
+    char *result = strdup(token_val.toString().toUtf8().constData());
     return result;
 }
 
@@ -401,37 +410,42 @@ static void jwt_decode_profile(const char *jwt, char *uuid, size_t uuid_size,
 
     if (decoded.isEmpty()) return;
 
-    McJson *j = mc_json_parse(decoded.constData());
-    if (!j) return;
+    QJsonParseError jwt_err;
+    QJsonDocument doc = QJsonDocument::fromJson(decoded, &jwt_err);
+    if (jwt_err.error != QJsonParseError::NoError) return;
+    QJsonObject j = doc.object();
 
     // Extract UUID from profiles.mc
-    McJson *profiles = mc_json_get(j, "profiles");
-    if (profiles) {
-        const char *mc_uuid = mc_json_get_string(profiles, "mc", NULL);
-        if (mc_uuid) {
+    QJsonValue profiles = j.value("profiles");
+    if (profiles.isObject()) {
+        QJsonValue mc_uuid = profiles.toObject().value("mc");
+        if (mc_uuid.isString()) {
             // UUID from JWT is already formatted with hyphens
-            strncpy(uuid, mc_uuid, uuid_size - 1);
+            strncpy(uuid, mc_uuid.toString().toUtf8().constData(), uuid_size - 1);
         }
     }
 
     // Extract username from pfd[0].name
     if (!name[0]) {
-        McJson *pfd = mc_json_get(j, "pfd");
-        if (pfd && pfd->type == MC_JSON_ARRAY) {
-            McJson *first = mc_json_get_array_item(pfd, 0);
-            if (first) {
-                const char *n = mc_json_get_string(first, "name", NULL);
-                if (n) strncpy(name, n, name_size - 1);
+        QJsonValue pfd = j.value("pfd");
+        if (pfd.isArray()) {
+            QJsonArray pfd_arr = pfd.toArray();
+            if (!pfd_arr.isEmpty()) {
+                QJsonValue first = pfd_arr.at(0);
+                if (first.isObject()) {
+                    QJsonValue n = first.toObject().value("name");
+                    if (n.isString()) {
+                        strncpy(name, n.toString().toUtf8().constData(), name_size - 1);
+                    }
+                }
             }
         }
     }
-
-    mc_json_free(j);
 }
 
 static int get_mc_profile(const char *mc_token, char *uuid, size_t uuid_size,
                           char *name, size_t name_size) {
-    char auth_header[1024];
+    char auth_header[MC_AUTH_TOKEN_SIZE + 128];
     snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", mc_token);
     mc_debug("[MSA] Profile header: %.150s...", auth_header);
     const char *headers[] = { auth_header };
@@ -449,12 +463,15 @@ static int get_mc_profile(const char *mc_token, char *uuid, size_t uuid_size,
             resp ? resp->status_code : 0,
             (resp && resp->data) ? resp->data : "(no response)");
         if (resp && resp->data) {
-            McJson *pj = mc_json_parse(resp->data);
-            if (pj) {
+            QJsonParseError pj_err;
+            QJsonDocument pj_doc = QJsonDocument::fromJson(QByteArray(resp->data), &pj_err);
+            if (pj_err.error == QJsonParseError::NoError) {
+                QJsonObject pj = pj_doc.object();
+                QJsonValue err_v = pj.value("error");
+                QJsonValue errmsg_v = pj.value("errorMessage");
                 mc_debug("[MSA] Profile error: %s, errorMessage: %s",
-                    mc_json_get_string(pj, "error", "(none)"),
-                    mc_json_get_string(pj, "errorMessage", "(none)"));
-                mc_json_free(pj);
+                    err_v.isString() ? err_v.toString().toUtf8().constData() : "(none)",
+                    errmsg_v.isString() ? errmsg_v.toString().toUtf8().constData() : "(none)");
             }
         }
         if (resp) mc_http_response_free(resp);
@@ -468,29 +485,31 @@ static int get_mc_profile(const char *mc_token, char *uuid, size_t uuid_size,
         return 0;
     }
 
-    McJson *j = mc_json_parse(resp->data);
+    QJsonParseError prof_err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data), &prof_err);
     mc_http_response_free(resp);
-    if (!j) { mc_error("[MSA] Failed to parse profile response"); return 0; }
+    if (prof_err.error != QJsonParseError::NoError) { mc_error("[MSA] Failed to parse profile response"); return 0; }
+    QJsonObject j = doc.object();
 
-    const char *err = mc_json_get_string(j, "error", NULL);
-    if (err) {
-        mc_error("[MSA] Profile error: %s", err);
-        mc_json_free(j);
+    QJsonValue err_v = j.value("error");
+    if (err_v.isString()) {
+        mc_error("[MSA] Profile error: %s", err_v.toString().toUtf8().constData());
         return 0;
     }
 
-    const char *raw_id = mc_json_get_string(j, "id", NULL);
-    const char *nm = mc_json_get_string(j, "name", NULL);
-    if (!raw_id || !nm) {
+    QJsonValue raw_id_v = j.value("id");
+    QJsonValue nm_v = j.value("name");
+    if (!raw_id_v.isString() || !nm_v.isString()) {
         mc_error("[MSA] Incomplete profile data");
-        mc_json_free(j);
         return 0;
     }
+
+    QString raw_id = raw_id_v.toString();
+    QString nm = nm_v.toString();
 
     // Format UUID with hyphens
-    format_uuid(raw_id, uuid, uuid_size);
-    strncpy(name, nm, name_size - 1);
-    mc_json_free(j);
+    format_uuid(raw_id.toUtf8().constData(), uuid, uuid_size);
+    strncpy(name, nm.toUtf8().constData(), name_size - 1);
     return 1;
 }
 
@@ -564,29 +583,29 @@ int mc_auth_msa_refresh(McAuthSession *session) {
         return 0;
     }
 
-    McJson *j = mc_json_parse(resp->data);
+    QJsonParseError refresh_err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data), &refresh_err);
     mc_http_response_free(resp);
-    if (!j) { mc_error("[MSA] Failed to parse refresh response"); return 0; }
+    if (refresh_err.error != QJsonParseError::NoError) { mc_error("[MSA] Failed to parse refresh response"); return 0; }
+    QJsonObject j = doc.object();
 
-    const char *err = mc_json_get_string(j, "error", NULL);
-    if (err) {
-        mc_error("[MSA] Refresh error: %s", err);
-        mc_json_free(j);
+    QJsonValue err_v = j.value("error");
+    if (err_v.isString()) {
+        mc_error("[MSA] Refresh error: %s", err_v.toString().toUtf8().constData());
         return 0;
     }
 
-    const char *msa_token = mc_json_get_string(j, "access_token", NULL);
-    const char *new_refresh = mc_json_get_string(j, "refresh_token", NULL);
-    if (!msa_token) { mc_error("[MSA] No access_token in refresh"); mc_json_free(j); return 0; }
+    QJsonValue msa_token_v = j.value("access_token");
+    QJsonValue new_refresh_v = j.value("refresh_token");
+    if (!msa_token_v.isString()) { mc_error("[MSA] No access_token in refresh"); return 0; }
 
-    if (new_refresh)
-        strncpy(session->msa_refresh_token, new_refresh,
+    QString msa_token = msa_token_v.toString();
+    if (new_refresh_v.isString())
+        strncpy(session->msa_refresh_token, new_refresh_v.toString().toUtf8().constData(),
                 sizeof(session->msa_refresh_token) - 1);
 
-    mc_json_free(j);
-
     char uhs[256] = "";
-    char *xbl_token = xbl_authenticate(msa_token, uhs, sizeof(uhs));
+    char *xbl_token = xbl_authenticate(msa_token.toUtf8().constData(), uhs, sizeof(uhs));
     if (!xbl_token) return 0;
 
     char *xsts_token = xsts_authenticate(xbl_token);

@@ -29,7 +29,7 @@ static void print_help(void) {
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     mc_console_init();
-    mc_log_set_level(MC_LOG_INFO);
+    mc_log_set_level(MC_LOG_DEBUG);
 
     const char *session_path = nullptr;
 

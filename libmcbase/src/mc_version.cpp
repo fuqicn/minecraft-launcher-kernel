@@ -1,11 +1,14 @@
 #include "mc_version.h"
 #include "mc_http.h"
-#include "mc_json.h"
 #include "mc_str.h"
 #include "mc_manifest.h"
 #include "mc_download.h"
 #include "mc_path.h"
 #include "mc_log.h"
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -13,115 +16,107 @@
 #include <iostream>
 
 void mc_version_init(McVersion *v) {
-    memset(v, 0, sizeof(McVersion));
+    if (!v) return;
+    void *base = v;
+    memset(base, 0, sizeof(McVersion) - sizeof(QJsonObject));
+    new (&v->raw_json) QJsonObject();
 }
 
-static void parse_library(McVersion *v, McJson *lib_json) {
+static void parse_library(McVersion *v, const QJsonObject &lib_json) {
     if (v->library_count >= MC_MAX_LIBRARIES) return;
     McLibrary *lib = &v->libraries[v->library_count];
     memset(lib, 0, sizeof(McLibrary));
 
-    const char *name = mc_json_get_string(lib_json, "name", "");
-    strncpy(lib->name, name, sizeof(lib->name) - 1);
+    QString name = lib_json.value("name").toString();
+    strncpy(lib->name, name.toUtf8().constData(), sizeof(lib->name) - 1);
     lib->is_required = 1;
 
-    // Parse rules
-    McJson *rules = mc_json_get(lib_json, "rules");
-    if (rules) {
+    QJsonValue rules = lib_json.value("rules");
+    if (!rules.isUndefined()) {
         lib->is_required = mc_version_evaluate_rules(rules);
-        mc_debug("  parse_library '%s': rules -> is_required=%d", name, lib->is_required);
+        mc_debug("  parse_library '%s': rules -> is_required=%d", lib->name, lib->is_required);
     }
 
-    // Parse downloads
-    McJson *downloads = mc_json_get(lib_json, "downloads");
-    if (downloads) {
-        McJson *artifact = mc_json_get(downloads, "artifact");
-        if (artifact) {
-            const char *url = mc_json_get_string(artifact, "url", "");
-            strncpy(lib->url, url, sizeof(lib->url) - 1);
-            const char *path = mc_json_get_string(artifact, "path", "");
-            strncpy(lib->path, path, sizeof(lib->path) - 1);
-            const char *sha1 = mc_json_get_string(artifact, "sha1", "");
-            strncpy(lib->sha1, sha1, sizeof(lib->sha1) - 1);
-            lib->size = (long)mc_json_get_number(artifact, "size", 0);
+    QJsonObject downloads = lib_json.value("downloads").toObject();
+    if (!downloads.isEmpty()) {
+        QJsonObject artifact = downloads.value("artifact").toObject();
+        if (!artifact.isEmpty()) {
+            strncpy(lib->url, artifact.value("url").toString().toUtf8().constData(), sizeof(lib->url) - 1);
+            strncpy(lib->path, artifact.value("path").toString().toUtf8().constData(), sizeof(lib->path) - 1);
+            strncpy(lib->sha1, artifact.value("sha1").toString().toUtf8().constData(), sizeof(lib->sha1) - 1);
+            lib->size = (long)artifact.value("size").toDouble(0);
         }
 
-        // Check for natives classifiers
-        McJson *classifiers = mc_json_get(downloads, "classifiers");
-        if (classifiers && classifiers->type == MC_JSON_OBJECT) {
-            // Look for natives-windows classifier
-            McJson *natives_win = mc_json_get(classifiers, "natives-windows");
-            if (natives_win) {
+        QJsonObject classifiers = downloads.value("classifiers").toObject();
+        if (!classifiers.isEmpty()) {
+            QJsonObject natives_win = classifiers.value("natives-windows").toObject();
+            if (!natives_win.isEmpty()) {
                 lib->is_natives = 1;
                 strcpy(lib->natives_key, "natives-windows");
-                const char *url = mc_json_get_string(natives_win, "url", "");
-                strncpy(lib->url, url, sizeof(lib->url) - 1);
-                const char *path = mc_json_get_string(natives_win, "path", "");
-                strncpy(lib->path, path, sizeof(lib->path) - 1);
-                const char *sha1 = mc_json_get_string(natives_win, "sha1", "");
-                strncpy(lib->sha1, sha1, sizeof(lib->sha1) - 1);
-                lib->size = (long)mc_json_get_number(natives_win, "size", 0);
+                strncpy(lib->classifier_url, natives_win.value("url").toString().toUtf8().constData(), sizeof(lib->classifier_url) - 1);
+                strncpy(lib->classifier_sha1, natives_win.value("sha1").toString().toUtf8().constData(), sizeof(lib->classifier_sha1) - 1);
+                lib->classifier_size = (long)natives_win.value("size").toDouble(0);
             } else {
-                // Try with ${arch} replacement
-                const char *key_n32 = "natives-windows-32";
-                const char *key_n64 = "natives-windows-64";
-                McJson *n64 = mc_json_get(classifiers, key_n64);
-                if (n64) {
+                QJsonObject n64 = classifiers.value("natives-windows-64").toObject();
+                if (!n64.isEmpty()) {
                     lib->is_natives = 1;
                     strcpy(lib->natives_key, "natives-windows-64");
-                    const char *url = mc_json_get_string(n64, "url", "");
-                    strncpy(lib->url, url, sizeof(lib->url) - 1);
-                    const char *path = mc_json_get_string(n64, "path", "");
-                    strncpy(lib->path, path, sizeof(lib->path) - 1);
-                    const char *sha1 = mc_json_get_string(n64, "sha1", "");
-                    strncpy(lib->sha1, sha1, sizeof(lib->sha1) - 1);
-                    lib->size = (long)mc_json_get_number(n64, "size", 0);
+                    strncpy(lib->classifier_url, n64.value("url").toString().toUtf8().constData(), sizeof(lib->classifier_url) - 1);
+                    strncpy(lib->classifier_sha1, n64.value("sha1").toString().toUtf8().constData(), sizeof(lib->classifier_sha1) - 1);
+                    lib->classifier_size = (long)n64.value("size").toDouble(0);
                 }
                 if (!lib->is_natives) {
-                    McJson *n32 = mc_json_get(classifiers, key_n32);
-                    if (n32) {
+                    QJsonObject n32 = classifiers.value("natives-windows-32").toObject();
+                    if (!n32.isEmpty()) {
                         lib->is_natives = 1;
                         strcpy(lib->natives_key, "natives-windows-32");
+                        strncpy(lib->classifier_url, n32.value("url").toString().toUtf8().constData(), sizeof(lib->classifier_url) - 1);
+                        strncpy(lib->classifier_sha1, n32.value("sha1").toString().toUtf8().constData(), sizeof(lib->classifier_sha1) - 1);
+                        lib->classifier_size = (long)n32.value("size").toDouble(0);
                     }
                 }
             }
         }
     } else {
-        // No downloads block - legacy format: use top-level url field as maven base
         lib->is_required = 1;
-        const char *url = mc_json_get_string(lib_json, "url", "");
-        if (url && *url) {
-            size_t len = strlen(url);
-            while (len > 0 && url[len - 1] == '/') len--;
+        QString url = lib_json.value("url").toString();
+        QByteArray urlBytes = url.toUtf8();
+        const char *urlStr = urlBytes.constData();
+        if (urlStr && *urlStr) {
+            size_t len = strlen(urlStr);
+            while (len > 0 && urlStr[len - 1] == '/') len--;
             if (len < sizeof(lib->url) - 1) {
-                memcpy(lib->url, url, len);
+                memcpy(lib->url, urlStr, len);
                 lib->url[len] = '\0';
             }
         }
     }
 
-    // Check natives field (old format)
-    McJson *natives = mc_json_get(lib_json, "natives");
-    if (natives && !lib->is_natives) {
-        const char *nw = mc_json_get_string(natives, "windows", NULL);
-        if (nw) {
+    QJsonObject natives = lib_json.value("natives").toObject();
+    if (!natives.isEmpty() && !lib->is_natives) {
+        QString nw = natives.value("windows").toString();
+        if (!nw.isEmpty()) {
             lib->is_natives = 1;
-            strncpy(lib->natives_key, nw, sizeof(lib->natives_key) - 1);
+            strncpy(lib->natives_key, nw.toUtf8().constData(), sizeof(lib->natives_key) - 1);
         }
     }
 
-    // Parse extract excludes
-    McJson *extract = mc_json_get(lib_json, "extract");
-    if (extract) {
-        McJson *exclude = mc_json_get(extract, "exclude");
-        if (exclude && exclude->type == MC_JSON_ARRAY) {
-            int n = mc_json_array_length(exclude);
-            for (int i = 0; i < n && lib->exclude_count < 8; i++) {
-                McJson *item = mc_json_get_array_item(exclude, i);
-                if (item && item->type == MC_JSON_STRING && item->string_value) {
-                    strncpy(lib->extract_exclude[lib->exclude_count++],
-                            item->string_value, 63);
-                }
+    if (!lib->is_natives) {
+        const char *last = strrchr(lib->name, ':');
+        if (last && strncmp(last + 1, "natives-", 8) == 0) {
+            lib->is_natives = 1;
+            strncpy(lib->natives_key, last + 1, sizeof(lib->natives_key) - 1);
+        }
+    }
+
+    QJsonObject extract = lib_json.value("extract").toObject();
+    if (!extract.isEmpty()) {
+        QJsonArray exclude = extract.value("exclude").toArray();
+        if (!exclude.isEmpty()) {
+            for (int i = 0; i < exclude.size() && lib->exclude_count < 8; i++) {
+                QString item = exclude[i].toString();
+                if (!item.isEmpty())
+                    strncpy(lib->extract_exclude[lib->exclude_count++], item.toUtf8().constData(), 63);
             }
         }
     }
@@ -129,129 +124,120 @@ static void parse_library(McVersion *v, McJson *lib_json) {
     v->library_count++;
 }
 
-static int rule_matches_current_os(McJson *os) {
-    if (!os) return 1;
+static int rule_matches_current_os(const QJsonValue &os) {
+    if (os.isUndefined()) return 1;
     const char *current_os = mc_platform_get();
     const char *current_arch = mc_platform_arch_get();
-    // New format (1.20+): os is a string like "@{name=windows}" or "@{arch=x86}"
-    if (os->type == MC_JSON_STRING && os->string_value) {
-        const char *s = os->string_value;
-        if (s[0] == '@' && s[1] == '{') {
-            s += 2;
-            const char *end = s + strlen(s) - 1;
+
+    if (os.isString()) {
+        QString s = os.toString();
+        QByteArray sBytes = s.toUtf8();
+        const char *cstr = sBytes.constData();
+        if (cstr[0] == '@' && cstr[1] == '{') {
+            const char *content = cstr + 2;
+            const char *end = content + strlen(content) - 1;
             if (*end == '}') {
                 char cond[256];
-                size_t len = (size_t)(end - s);
+                size_t len = (size_t)(end - content);
                 if (len >= sizeof(cond)) len = sizeof(cond) - 1;
-                memcpy(cond, s, len);
+                memcpy(cond, content, len);
                 cond[len] = '\0';
                 char *eq = strchr(cond, '=');
                 if (eq) {
                     *eq = '\0';
                     const char *key = cond;
                     const char *val = eq + 1;
-                    if (strcmp(key, "name") == 0) {
+                    if (strcmp(key, "name") == 0)
                         return (strcmp(val, current_os) == 0) ? 1 : 0;
-                    } else if (strcmp(key, "arch") == 0) {
-                        if (strcmp(val, "x86") == 0)
-                            return (strcmp(current_arch, "x86") == 0) ? 1 : 0;
-                        if (strcmp(val, "x64") == 0)
-                            return (strcmp(current_arch, "x64") == 0) ? 1 : 0;
+                    if (strcmp(key, "arch") == 0) {
+                        if (strcmp(val, "x86") == 0) return (strcmp(current_arch, "x86") == 0) ? 1 : 0;
+                        if (strcmp(val, "x64") == 0) return (strcmp(current_arch, "x64") == 0) ? 1 : 0;
                     }
                 }
             }
         }
         return 1;
     }
-    // Old format: os is an object {"name": "windows"}
-    const char *name = mc_json_get_string(os, "name", "");
-    if (name && *name) {
-        if (strcmp(name, current_os) != 0) return 0;
+
+    if (os.isObject()) {
+        QJsonObject osObj = os.toObject();
+        QString name = osObj.value("name").toString();
+        if (!name.isEmpty()) {
+            if (name.compare(QLatin1String(current_os), Qt::CaseInsensitive) != 0) return 0;
+        }
+        QString arch = osObj.value("arch").toString();
+        if (!arch.isEmpty()) {
+            if (arch == "x86" && strcmp(current_arch, "x86") != 0) return 0;
+            if (arch == "x64" && strcmp(current_arch, "x64") != 0) return 0;
+        }
+        return 1;
     }
-    const char *arch = mc_json_get_string(os, "arch", "");
-    if (arch && *arch) {
-        if (strcmp(arch, "x86") == 0)
-            return (strcmp(current_arch, "x86") == 0) ? 1 : 0;
-    }
+
     return 1;
 }
 
-// Check if features condition matches (1.20+ format)
-// Features like is_demo_user=false, has_custom_resolution=false, etc. should NOT match
-static int feature_matches(McJson *features) {
-    if (!features || features->type != MC_JSON_OBJECT) return 1;
-    // Check each feature key-value pair
-    // If ANY feature doesn't match, the rule doesn't apply
-    for (McJson *f = features->child; f; f = f->next) {
-        if (!f->key) continue;
-        // All known features that we DON'T want enabled
-        // is_demo_user: we're not in demo mode
-        // has_custom_resolution: we don't pass custom resolution
-        // has_quick_plays_support / is_quick_play_*: we don't support quick plays
-        if (strcmp(f->key, "is_demo_user") == 0) {
-            // If feature is true, we're in demo mode (we're not)
-            // If feature is false or missing, we're NOT in demo mode -> rule should NOT match
-            if (f->type == MC_JSON_NUMBER && f->number_value != 0) return 0;
-            if (f->type == MC_JSON_BOOL && f->bool_value) return 0;
+static int feature_matches(const QJsonObject &features) {
+    if (features.isEmpty()) return 1;
+    for (auto it = features.begin(); it != features.end(); ++it) {
+        if (it.key() == "is_demo_user") {
+            if (it.value().isBool() && it.value().toBool()) return 0;
+            if (it.value().isDouble() && it.value().toDouble() != 0) return 0;
         }
-        if (strcmp(f->key, "has_custom_resolution") == 0) {
-            if (f->type == MC_JSON_NUMBER && f->number_value != 0) return 0;
-            if (f->type == MC_JSON_BOOL && f->bool_value) return 0;
+        if (it.key() == "has_custom_resolution") {
+            if (it.value().isBool() && it.value().toBool()) return 0;
+            if (it.value().isDouble() && it.value().toDouble() != 0) return 0;
         }
-        if (strcmp(f->key, "has_quick_plays_support") == 0) {
-            if (f->type == MC_JSON_NUMBER && f->number_value != 0) return 0;
-            if (f->type == MC_JSON_BOOL && f->bool_value) return 0;
+        if (it.key() == "has_quick_plays_support") {
+            if (it.value().isBool() && it.value().toBool()) return 0;
+            if (it.value().isDouble() && it.value().toDouble() != 0) return 0;
         }
-        if (strstr(f->key, "is_quick_play") == f->key) {
-            if (f->type == MC_JSON_NUMBER && f->number_value != 0) return 0;
-            if (f->type == MC_JSON_BOOL && f->bool_value) return 0;
+        if (it.key().startsWith("is_quick_play")) {
+            if (it.value().isBool() && it.value().toBool()) return 0;
+            if (it.value().isDouble() && it.value().toDouble() != 0) return 0;
         }
     }
-    // All features are false/missing -> rule doesn't match
     return 0;
 }
 
-int mc_version_evaluate_rules(McJson *rules_node) {
-    if (!rules_node) return 1;
-    // Handle single-object rule (not wrapped in array)
-    if (rules_node->type == MC_JSON_OBJECT) {
-        const char *action = mc_json_get_string(rules_node, "action", "");
-        McJson *os = mc_json_get(rules_node, "os");
-        McJson *features = mc_json_get(rules_node, "features");
-        if (os) {
+int mc_version_evaluate_rules(const QJsonValue &rules_node) {
+    if (rules_node.isUndefined()) return 1;
+
+    if (rules_node.isObject()) {
+        QJsonObject rule = rules_node.toObject();
+        QString action = rule.value("action").toString();
+        QJsonValue os = rule.value("os");
+        QJsonValue features = rule.value("features");
+        if (!os.isUndefined()) {
             if (rule_matches_current_os(os))
-                return (strcmp(action, "allow") == 0) ? 1 : 0;
+                return (action == "allow") ? 1 : 0;
             return 0;
         }
-        if (features) {
-            if (feature_matches(features))
-                return (strcmp(action, "allow") == 0) ? 1 : 0;
+        if (!features.isUndefined()) {
+            if (feature_matches(features.toObject()))
+                return (action == "allow") ? 1 : 0;
             return 0;
         }
-        return (strcmp(action, "allow") == 0) ? 1 : 0;
+        return (action == "allow") ? 1 : 0;
     }
-    if (rules_node->type != MC_JSON_ARRAY) return 0;
+
+    if (!rules_node.isArray()) return 0;
+    QJsonArray arr = rules_node.toArray();
     int result = 0;
-    int n = mc_json_array_length(rules_node);
-    for (int i = 0; i < n; i++) {
-        McJson *rule = mc_json_get_array_item(rules_node, i);
-        if (!rule) continue;
-        McJson *inner = rule;
-        // Handle array items that are also single objects
-        if (inner->type == MC_JSON_OBJECT) {
-            const char *action = mc_json_get_string(inner, "action", "");
-            McJson *os = mc_json_get(inner, "os");
-            McJson *features = mc_json_get(inner, "features");
-            if (os) {
-                if (rule_matches_current_os(os))
-                    result = (strcmp(action, "allow") == 0) ? 1 : 0;
-            } else if (features) {
-                if (feature_matches(features))
-                    result = (strcmp(action, "allow") == 0) ? 1 : 0;
-            } else {
-                // Rule without OS or features restriction applies unconditionally
-                result = (strcmp(action, "allow") == 0) ? 1 : 0;
-            }
+    for (int i = 0; i < arr.size(); i++) {
+        QJsonValue rule_val = arr[i];
+        if (!rule_val.isObject()) continue;
+        QJsonObject rule = rule_val.toObject();
+        QString action = rule.value("action").toString();
+        QJsonValue os = rule.value("os");
+        QJsonValue features = rule.value("features");
+        if (!os.isUndefined()) {
+            if (rule_matches_current_os(os))
+                result = (action == "allow") ? 1 : 0;
+        } else if (!features.isUndefined()) {
+            if (feature_matches(features.toObject()))
+                result = (action == "allow") ? 1 : 0;
+        } else {
+            result = (action == "allow") ? 1 : 0;
         }
     }
     return result;
@@ -259,73 +245,70 @@ int mc_version_evaluate_rules(McJson *rules_node) {
 
 int mc_version_parse(McVersion *v, const char *json_data) {
     if (!v || !json_data) return 0;
-    McJson *j = mc_json_parse(json_data);
-    if (!j || j->type != MC_JSON_OBJECT) { mc_json_free(j); return 0; }
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(json_data), &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return 0;
+    QJsonObject j = doc.object();
     v->raw_json = j;
 
-    const char *s;
-    s = mc_json_get_string(j, "id", ""); strncpy(v->id, s, sizeof(v->id) - 1);
-    s = mc_json_get_string(j, "type", ""); strncpy(v->type, s, sizeof(v->type) - 1);
-    s = mc_json_get_string(j, "mainClass", ""); strncpy(v->main_class, s, sizeof(v->main_class) - 1);
-    s = mc_json_get_string(j, "minecraftArguments", ""); strncpy(v->minecraft_arguments, s, sizeof(v->minecraft_arguments) - 1);
-    s = mc_json_get_string(j, "inheritsFrom", ""); strncpy(v->inherits_from, s, sizeof(v->inherits_from) - 1);
-    s = mc_json_get_string(j, "jar", ""); strncpy(v->jar, s, sizeof(v->jar) - 1);
-    s = mc_json_get_string(j, "assets", ""); strncpy(v->assets, s, sizeof(v->assets) - 1);
+    QString s;
+    s = j.value("id").toString(); strncpy(v->id, s.toUtf8().constData(), sizeof(v->id) - 1);
+    s = j.value("type").toString(); strncpy(v->type, s.toUtf8().constData(), sizeof(v->type) - 1);
+    s = j.value("mainClass").toString(); strncpy(v->main_class, s.toUtf8().constData(), sizeof(v->main_class) - 1);
+    s = j.value("minecraftArguments").toString(); strncpy(v->minecraft_arguments, s.toUtf8().constData(), sizeof(v->minecraft_arguments) - 1);
+    s = j.value("inheritsFrom").toString(); strncpy(v->inherits_from, s.toUtf8().constData(), sizeof(v->inherits_from) - 1);
+    s = j.value("jar").toString(); strncpy(v->jar, s.toUtf8().constData(), sizeof(v->jar) - 1);
+    s = j.value("assets").toString(); strncpy(v->assets, s.toUtf8().constData(), sizeof(v->assets) - 1);
 
-    // Asset index
-    McJson *ai = mc_json_get(j, "assetIndex");
-    if (ai) {
-        s = mc_json_get_string(ai, "id", ""); strncpy(v->asset_index.id, s, sizeof(v->asset_index.id) - 1);
-        s = mc_json_get_string(ai, "url", ""); strncpy(v->asset_index.url, s, sizeof(v->asset_index.url) - 1);
-        s = mc_json_get_string(ai, "sha1", ""); strncpy(v->asset_index.sha1, s, sizeof(v->asset_index.sha1) - 1);
-        v->asset_index.size = (long)mc_json_get_number(ai, "size", 0);
-        v->asset_index.total_size = (long)mc_json_get_number(ai, "totalSize", 0);
+    QJsonObject ai = j.value("assetIndex").toObject();
+    if (!ai.isEmpty()) {
+        strncpy(v->asset_index.id, ai.value("id").toString().toUtf8().constData(), sizeof(v->asset_index.id) - 1);
+        strncpy(v->asset_index.url, ai.value("url").toString().toUtf8().constData(), sizeof(v->asset_index.url) - 1);
+        strncpy(v->asset_index.sha1, ai.value("sha1").toString().toUtf8().constData(), sizeof(v->asset_index.sha1) - 1);
+        v->asset_index.size = (long)ai.value("size").toDouble(0);
+        v->asset_index.total_size = (long)ai.value("totalSize").toDouble(0);
     }
 
-    // Java version
-    McJson *jv = mc_json_get(j, "javaVersion");
-    if (jv) {
-        v->java_major_version = (int)mc_json_get_number(jv, "majorVersion", 0);
-        s = mc_json_get_string(jv, "component", ""); strncpy(v->java_component, s, sizeof(v->java_component) - 1);
+    QJsonObject jv = j.value("javaVersion").toObject();
+    if (!jv.isEmpty()) {
+        v->java_major_version = (int)jv.value("majorVersion").toDouble(0);
+        strncpy(v->java_component, jv.value("component").toString().toUtf8().constData(), sizeof(v->java_component) - 1);
     }
 
-    // Downloads
-    McJson *dl = mc_json_get(j, "downloads");
-    if (dl) {
-        McJson *client = mc_json_get(dl, "client");
-        if (client) {
-            s = mc_json_get_string(client, "url", ""); strncpy(v->client_url, s, sizeof(v->client_url) - 1);
-            s = mc_json_get_string(client, "sha1", ""); strncpy(v->client_sha1, s, sizeof(v->client_sha1) - 1);
-            v->client_size = (long)mc_json_get_number(client, "size", 0);
+    QJsonObject dl = j.value("downloads").toObject();
+    if (!dl.isEmpty()) {
+        QJsonObject client = dl.value("client").toObject();
+        if (!client.isEmpty()) {
+            strncpy(v->client_url, client.value("url").toString().toUtf8().constData(), sizeof(v->client_url) - 1);
+            strncpy(v->client_sha1, client.value("sha1").toString().toUtf8().constData(), sizeof(v->client_sha1) - 1);
+            v->client_size = (long)client.value("size").toDouble(0);
         }
-        McJson *server = mc_json_get(dl, "server");
-        if (server) {
-            s = mc_json_get_string(server, "url", ""); strncpy(v->server_url, s, sizeof(v->server_url) - 1);
-            s = mc_json_get_string(server, "sha1", ""); strncpy(v->server_sha1, s, sizeof(v->server_sha1) - 1);
-            v->server_size = (long)mc_json_get_number(server, "size", 0);
+        QJsonObject server = dl.value("server").toObject();
+        if (!server.isEmpty()) {
+            strncpy(v->server_url, server.value("url").toString().toUtf8().constData(), sizeof(v->server_url) - 1);
+            strncpy(v->server_sha1, server.value("sha1").toString().toUtf8().constData(), sizeof(v->server_sha1) - 1);
+            v->server_size = (long)server.value("size").toDouble(0);
         }
     }
 
-    // Logging client
-    McJson *logcfg = mc_json_get(j, "logging");
-    if (logcfg) {
-        McJson *client = mc_json_get(logcfg, "client");
-        if (client) {
-            McJson *file = mc_json_get(client, "file");
-            if (file) {
-                s = mc_json_get_string(file, "url", ""); strncpy(v->logging_client_url, s, sizeof(v->logging_client_url) - 1);
-                s = mc_json_get_string(file, "sha1", ""); strncpy(v->logging_client_sha1, s, sizeof(v->logging_client_sha1) - 1);
+    QJsonObject logcfg = j.value("logging").toObject();
+    if (!logcfg.isEmpty()) {
+        QJsonObject lclient = logcfg.value("client").toObject();
+        if (!lclient.isEmpty()) {
+            QJsonObject file = lclient.value("file").toObject();
+            if (!file.isEmpty()) {
+                strncpy(v->logging_client_url, file.value("url").toString().toUtf8().constData(), sizeof(v->logging_client_url) - 1);
+                strncpy(v->logging_client_sha1, file.value("sha1").toString().toUtf8().constData(), sizeof(v->logging_client_sha1) - 1);
             }
         }
     }
 
-    // Libraries
-    McJson *libs = mc_json_get(j, "libraries");
-    if (libs && libs->type == MC_JSON_ARRAY) {
-        int n = mc_json_array_length(libs);
-        for (int i = 0; i < n; i++) {
-            McJson *lib_json = mc_json_get_array_item(libs, i);
-            if (lib_json) parse_library(v, lib_json);
+    QJsonArray libs = j.value("libraries").toArray();
+    if (!libs.isEmpty()) {
+        for (int i = 0; i < libs.size(); i++) {
+            QJsonValue lib_val = libs[i];
+            if (lib_val.isObject())
+                parse_library(v, lib_val.toObject());
         }
     }
 
@@ -386,7 +369,6 @@ int mc_version_fetch_by_id_mirror(McVersion *v, const char *version_id, const ch
         return 0;
     }
     free(manifest);
-    // Translate version URL if mirror is set
     if (mirror_type && strcmp(mirror_type, "mojang") != 0) {
         char translated[512];
         if (mc_download_translate_mojang_url(entry.url, translated, sizeof(translated), mirror_type)) {
@@ -398,12 +380,10 @@ int mc_version_fetch_by_id_mirror(McVersion *v, const char *version_id, const ch
 
 void mc_version_free(McVersion *v) {
     if (!v) return;
-    mc_json_free(v->raw_json);
-    v->raw_json = NULL;
+    v->raw_json = QJsonObject();
     v->is_loaded = 0;
 }
 
-// ---- Cross-platform runtime detection ----
 static char g_platform[16] = "";
 static char g_arch[16] = "";
 

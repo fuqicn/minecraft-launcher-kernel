@@ -50,6 +50,17 @@ int mc_library_resolve_url(const char *name, const char *mirror_base, char *out,
 }
 
 int mc_library_natives_path(const char *name, const char *natives_key, char *out, size_t out_size) {
+    // For new-style entries where classifier is embedded in the name (4+ parts)
+    if (!natives_key || !*natives_key) {
+        char **parts = NULL;
+        int n = mc_strsplit(name, ':', &parts);
+        if (n >= 4) {
+            maven_to_path(name, out, out_size, 1, parts[3]);
+            mc_strsplit_free(parts, n);
+            return out[0] != '\0';
+        }
+        mc_strsplit_free(parts, n);
+    }
     std::string key = natives_key ? natives_key : "natives-windows";
     std::string::size_type pos = key.find("${arch}");
     if (pos != std::string::npos) {

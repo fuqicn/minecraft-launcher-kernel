@@ -11,6 +11,10 @@
 #include <QtCore/QCoreApplication>
 #include <QtCore/QProcess>
 #include <QtCore/QStringList>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonValue>
 
 static const char *g_mirror = nullptr;
 static long g_timeout_ms = 120000;
@@ -44,7 +48,7 @@ static void del_version(McVersion *v) {
 }
 
 static void make_loader_version_id(const char *prefix, const char *loader_ver, const char *mc_ver,
-                                    McVersion *v, McJson *raw_json) {
+                                    McVersion *v, QJsonObject &raw_json) {
     if (strcmp(v->id, mc_ver) == 0 ||
         (v->inherits_from[0] && strcmp(v->id, v->inherits_from) == 0)) {
         char new_id[64];
@@ -52,11 +56,7 @@ static void make_loader_version_id(const char *prefix, const char *loader_ver, c
             snprintf(new_id, sizeof(new_id), "%s-%s-%s", prefix, loader_ver, mc_ver);
         else
             snprintf(new_id, sizeof(new_id), "%s-%s", prefix, mc_ver);
-        McJson *id_node = mc_json_get(raw_json, "id");
-        if (id_node && id_node->type == MC_JSON_STRING && id_node->string_value) {
-            free(id_node->string_value);
-            id_node->string_value = strdup(new_id);
-        }
+        raw_json["id"] = QString(new_id);
         strncpy(v->id, new_id, sizeof(v->id) - 1);
     }
 }
@@ -70,9 +70,11 @@ static void save_version_profile(McVersion *v, const char *mc_dir) {
     mc_path_mkdir_p(ver_dir);
     char json_path[MC_PATH_MAX];
     snprintf(json_path, sizeof(json_path), "%s/%s.json", ver_dir, v->id);
-    if (v->raw_json) {
-        char *json_str = mc_json_stringify(v->raw_json);
-        if (json_str) { FILE *f = fopen(json_path, "w"); if (f) { fputs(json_str, f); fclose(f); } free(json_str); }
+    if (!v->raw_json.isEmpty()) {
+        QJsonDocument doc(v->raw_json);
+        QByteArray json_bytes = doc.toJson(QJsonDocument::Indented);
+        FILE *f = fopen(json_path, "wb");
+        if (f) { fwrite(json_bytes.constData(), 1, json_bytes.size(), f); fclose(f); }
     }
     mc_info("Profile saved: %s/%s.json", ver_dir, v->id);
 }
@@ -136,21 +138,20 @@ static int install_fabric(const char *mc_ver, const char *loader_ver, const char
         McHttpClient client; mc_http_init(&client); mc_http_set_timeout(&client, 30000);
         McHttpResponse *resp = mc_http_get(&client, list_url);
         if (resp && resp->success && resp->data) {
-            McJson *arr = mc_json_parse(resp->data);
-            if (arr && arr->type == MC_JSON_ARRAY) {
-                McJson *first = mc_json_get_array_item(arr, 0);
-                if (first) {
-                    McJson *loader_obj = mc_json_get(first, "loader");
-                    if (loader_obj) {
-                        const char *latest = mc_json_get_string(loader_obj, "version", nullptr);
-                        if (latest) {
-                            strncpy(loader_ver_buf, latest, sizeof(loader_ver_buf) - 1);
-                            loader_ver = loader_ver_buf;
-                        }
+            QJsonParseError err;
+            QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data), &err);
+            if (err.error == QJsonParseError::NoError && doc.isArray()) {
+                QJsonArray arr = doc.array();
+                if (!arr.isEmpty()) {
+                    QJsonObject first = arr[0].toObject();
+                    QJsonObject loader_obj = first.value("loader").toObject();
+                    QString latest = loader_obj.value("version").toString();
+                    if (!latest.isEmpty()) {
+                        strncpy(loader_ver_buf, latest.toUtf8().constData(), sizeof(loader_ver_buf) - 1);
+                        loader_ver = loader_ver_buf;
                     }
                 }
             }
-            mc_json_free(arr);
         }
         if (resp) mc_http_response_free(resp);
         mc_info("Fabric loader version: %s", loader_ver && *loader_ver ? loader_ver : "(latest)");
@@ -195,22 +196,31 @@ static int install_forge(const char *mc_ver, const char *forge_ver, const char *
         if (resp) { mc_http_response_free(resp); } return 1;
     }
 
-    McJson *versions = mc_json_parse(resp->data);
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data));
     mc_http_response_free(resp);
-    if (!versions || versions->type != MC_JSON_ARRAY) { mc_error("Invalid Forge version list"); mc_json_free(versions); return 1; }
+    if (!doc.isArray()) { mc_error("Invalid Forge version list"); return 1; }
+    QJsonArray versions = doc.array();
 
     const char *selected = nullptr;
-    McJson *selected_entry = nullptr;
-    int n = mc_json_array_length(versions);
+    QJsonObject selected_entry;
+    int n = versions.size();
     for (int i = 0; i < n; i++) {
-        McJson *entry = mc_json_get_array_item(versions, i);
-        if (!entry) continue;
-        const char *ver = mc_json_get_string(entry, "version", "");
+        QJsonObject entry = versions[i].toObject();
+        QString ver = entry.value("version").toString();
         if (!forge_ver || !*forge_ver) {
-            if (!selected || strcmp(ver, selected) > 0) { selected = ver; selected_entry = entry; }
-        } else if (strcmp(ver, forge_ver) == 0) { selected = ver; selected_entry = entry; break; }
+            if (!selected || strcmp(ver.toUtf8().constData(), selected) > 0) {
+                selected = ver.toUtf8().constData();
+                selected_entry = entry;
+            }
+        } else if (strcmp(ver.toUtf8().constData(), forge_ver) == 0) {
+            QByteArray verBytes = ver.toUtf8();
+            char *sel = (char*)malloc((size_t)verBytes.size() + 1);
+            if (sel) { memcpy(sel, verBytes.constData(), (size_t)verBytes.size() + 1); selected = sel; }
+            selected_entry = entry;
+            break;
+        }
     }
-    if (!selected_entry) { mc_error("No Forge version found"); mc_json_free(versions); return 1; }
+    if (!selected) { mc_error("No Forge version found"); return 1; }
     mc_info("Selected Forge version: %s", selected);
 
     const char *file_ver = selected;
@@ -223,7 +233,7 @@ static int install_forge(const char *mc_ver, const char *forge_ver, const char *
     if (!download_file(dl_url, output_path)) {
         snprintf(dl_url, sizeof(dl_url), "https://files.minecraftforge.net/maven/net/minecraftforge/forge/%s-%s/forge-%s-%s-installer.jar", mc_ver, file_ver, mc_ver, file_ver);
         if (!download_file(dl_url, output_path)) {
-            mc_error("Failed to download Forge JAR"); mc_json_free(versions); return 1;
+            mc_error("Failed to download Forge JAR"); return 1;
         }
     }
     mc_info("Forge installer downloaded: %s", output_path);
@@ -231,7 +241,6 @@ static int install_forge(const char *mc_ver, const char *forge_ver, const char *
     int installed = run_installer_jar(java_path, output_path, mc_dir);
     if (installed) {
         mc_info("Forge installer completed");
-        mc_json_free(versions);
         return 0;
     }
 
@@ -247,12 +256,10 @@ static int install_forge(const char *mc_ver, const char *forge_ver, const char *
         save_version_profile(pv, mc_dir);
         del_version(pv);
         mc_info("Forge profile saved from JSON fallback");
-        mc_json_free(versions);
         return 0;
     }
     del_version(pv);
     mc_warn("Run the installer manually: java -jar \"%s\" --installClient \"%s\"", output_path, mc_dir);
-    mc_json_free(versions);
     return 1;
 }
 
@@ -269,19 +276,20 @@ static int install_quilt(const char *mc_ver, const char *loader_ver, const char 
         McHttpClient client; mc_http_init(&client); mc_http_set_timeout(&client, 30000);
         McHttpResponse *resp = mc_http_get(&client, list_url);
         if (resp && resp->success && resp->data) {
-            McJson *arr = mc_json_parse(resp->data);
-            if (arr && arr->type == MC_JSON_ARRAY) {
-                McJson *first = mc_json_get_array_item(arr, 0);
-                if (first) {
-                    McJson *loader_obj = mc_json_get(first, "loader");
-                    const char *latest = loader_obj ? mc_json_get_string(loader_obj, "version", nullptr) : nullptr;
-                    if (latest) {
-                        strncpy(loader_ver_buf, latest, sizeof(loader_ver_buf) - 1);
+            QJsonParseError err;
+            QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data), &err);
+            if (err.error == QJsonParseError::NoError && doc.isArray()) {
+                QJsonArray arr = doc.array();
+                if (!arr.isEmpty()) {
+                    QJsonObject first = arr[0].toObject();
+                    QJsonObject loader_obj = first.value("loader").toObject();
+                    QString latest = loader_obj.value("version").toString();
+                    if (!latest.isEmpty()) {
+                        strncpy(loader_ver_buf, latest.toUtf8().constData(), sizeof(loader_ver_buf) - 1);
                         loader_ver = loader_ver_buf;
                     }
                 }
             }
-            mc_json_free(arr);
         }
         mc_http_response_free(resp);
         mc_info("Quilt loader version: %s", loader_ver && *loader_ver ? loader_ver : "(latest)");
@@ -329,25 +337,25 @@ static int install_neoforge(const char *mc_ver, const char *nforge_ver, const ch
         if (resp) { mc_http_response_free(resp); } return 1;
     }
 
-    McJson *json = mc_json_parse(resp->data);
+    QJsonParseError err;
+    QJsonDocument json_doc = QJsonDocument::fromJson(QByteArray(resp->data), &err);
     mc_http_response_free(resp);
-    if (!json) { mc_error("Invalid NeoForge version list JSON"); return 1; }
+    if (err.error != QJsonParseError::NoError) { mc_error("Invalid NeoForge version list JSON"); return 1; }
+    QJsonObject json = json_doc.object();
 
     char version_buf[128] = "";
     if (nforge_ver && *nforge_ver) {
         strncpy(version_buf, nforge_ver, sizeof(version_buf) - 1);
     } else {
-        McJson *versions = mc_json_get(json, "versions");
-        if (versions && versions->type == MC_JSON_ARRAY) {
-            int n = mc_json_array_length(versions);
-            for (int i = 0; i < n; i++) {
-                McJson *item = mc_json_get_array_item(versions, i);
-                if (!item || item->type != MC_JSON_STRING || !item->string_value) continue;
-                strncpy(version_buf, item->string_value, sizeof(version_buf) - 1);
+        QJsonArray versions_arr = json.value("versions").toArray();
+        for (int i = 0; i < versions_arr.size(); i++) {
+            QJsonValue item = versions_arr[i];
+            if (item.isString()) {
+                QString itemStr = item.toString();
+                strncpy(version_buf, itemStr.toUtf8().constData(), sizeof(version_buf) - 1);
             }
         }
     }
-    mc_json_free(json);
     if (!version_buf[0]) { mc_error("No NeoForge version found"); return 1; }
     mc_info("NeoForge version: %s", version_buf);
 
@@ -403,19 +411,26 @@ static int install_optifine(const char *mc_ver, const char *mc_dir, const char *
         if (resp) { mc_http_response_free(resp); } return 1;
     }
 
-    McJson *list = mc_json_parse(resp->data);
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(resp->data), &err);
     mc_http_response_free(resp);
-    if (!list || list->type != MC_JSON_ARRAY) { mc_error("Invalid OptiFine version list"); mc_json_free(list); return 1; }
+    if (err.error != QJsonParseError::NoError || !doc.isArray()) {
+        mc_error("Invalid OptiFine version list"); return 1;
+    }
+    QJsonArray list = doc.array();
 
     const char *filename = nullptr;
-    int n = mc_json_array_length(list);
-    for (int i = 0; i < n; i++) {
-        McJson *entry = mc_json_get_array_item(list, i);
-        if (!entry) continue;
-        const char *ver = mc_json_get_string(entry, "mcversion", "");
-        if (strcmp(ver, mc_ver) == 0) { filename = mc_json_get_string(entry, "filename", nullptr); break; }
+    QByteArray filenameBytes;
+    for (int i = 0; i < list.size(); i++) {
+        QJsonObject entry = list[i].toObject();
+        QString ver = entry.value("mcversion").toString();
+        if (ver == QString::fromUtf8(mc_ver)) {
+            filenameBytes = entry.value("filename").toString().toUtf8();
+            filename = filenameBytes.constData();
+            break;
+        }
     }
-    if (!filename) { mc_error("No OptiFine found for MC %s", mc_ver); mc_json_free(list); return 1; }
+    if (!filename) { mc_error("No OptiFine found for MC %s", mc_ver); return 1; }
     mc_info("OptiFine: %s", filename);
 
     char dl_url[512], dl_url2[512], output_path[MC_PATH_MAX];
@@ -424,7 +439,7 @@ static int install_optifine(const char *mc_ver, const char *mc_dir, const char *
     snprintf(output_path, sizeof(output_path), "%s/%s", mc_dir, filename);
     if (!download_file(dl_url, output_path))
         if (!download_file(dl_url2, output_path))
-            { mc_error("Failed to download OptiFine"); mc_json_free(list); return 1; }
+            { mc_error("Failed to download OptiFine"); return 1; }
     mc_info("OptiFine saved: %s", output_path);
 
     // Try to extract with java -jar --extract
@@ -444,7 +459,6 @@ static int install_optifine(const char *mc_ver, const char *mc_dir, const char *
     } else {
         mc_warn("No Java runtime found; extract manually: java -jar \"%s\"", output_path);
     }
-    mc_json_free(list);
     return 0;
 }
 
@@ -466,27 +480,35 @@ static int install_liteloader(const char *mc_ver, const char *mc_dir, const char
     }
     mc_info("LiteLoader version data fetched");
 
-    McJson *versions_json = mc_json_parse(resp->data);
+    QJsonParseError err;
+    QJsonDocument versions_doc = QJsonDocument::fromJson(QByteArray(resp->data), &err);
     int result = 0;
-    if (versions_json) {
-        McJson *versions = mc_json_get(versions_json, "versions");
-        if (versions) {
-            McJson *mc_ver_obj = mc_json_get(versions, mc_ver);
-            if (mc_ver_obj) {
-                McJson *repo = mc_json_get(mc_ver_obj, "repo");
-                if (repo) {
-                    McJson *liteloader = mc_json_get(repo, "com/mumfrey/liteloader");
-                    if (liteloader) {
-                        for (McJson *child = liteloader->child; child; child = child->next) {
-                            if (!child->key) continue;
-                            if (strstr(child->key, "-release.json") || strstr(child->key, "-release.jar")) {
-                                const char *dl_url = mc_json_get_string(child, "url", nullptr);
-                                if (!dl_url || !*dl_url) continue;
+    if (err.error == QJsonParseError::NoError && versions_doc.isObject()) {
+        QJsonObject versions_json = versions_doc.object();
+        QJsonValue versions_val = versions_json.value("versions");
+        if (versions_val.isObject()) {
+            QJsonObject versions_obj = versions_val.toObject();
+            QJsonValue mc_ver_val = versions_obj.value(QString::fromUtf8(mc_ver));
+            if (mc_ver_val.isObject()) {
+                QJsonObject mc_ver_obj = mc_ver_val.toObject();
+                QJsonValue repo_val = mc_ver_obj.value("repo");
+                if (repo_val.isObject()) {
+                    QJsonObject repo = repo_val.toObject();
+                    QJsonValue liteloader_val = repo.value("com/mumfrey/liteloader");
+                    if (liteloader_val.isObject()) {
+                        QJsonObject liteloader_obj = liteloader_val.toObject();
+                        for (auto it = liteloader_obj.begin(); it != liteloader_obj.end(); ++it) {
+                            if (it.key().contains("-release.json") || it.key().contains("-release.jar")) {
+                                QJsonObject child = it.value().toObject();
+                                QString dl_url = child.value("url").toString();
+                                if (dl_url.isEmpty()) continue;
                                 char profile_url[512];
-                                if (strncmp(dl_url, "http", 4) == 0)
-                                    strncpy(profile_url, dl_url, sizeof(profile_url) - 1);
+                                QByteArray dlUrlBytes = dl_url.toUtf8();
+                                const char *dl_url_cstr = dlUrlBytes.constData();
+                                if (strncmp(dl_url_cstr, "http", 4) == 0)
+                                    strncpy(profile_url, dl_url_cstr, sizeof(profile_url) - 1);
                                 else
-                                    snprintf(profile_url, sizeof(profile_url), "https://dl.liteloader.com/%s", dl_url);
+                                    snprintf(profile_url, sizeof(profile_url), "https://dl.liteloader.com/%s", dl_url_cstr);
 
                                 McVersion *v = new_version();
                                 if (v && mc_version_fetch(v, profile_url)) {
@@ -511,7 +533,6 @@ static int install_liteloader(const char *mc_ver, const char *mc_dir, const char
             }
         }
     }
-    mc_json_free(versions_json);
 
     char data_path[MC_PATH_MAX];
     snprintf(data_path, sizeof(data_path), "%s/liteloader-%s-data.json", mc_dir, mc_ver);
