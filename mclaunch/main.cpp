@@ -12,6 +12,7 @@
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QJsonArray>
+#include "mc_auth.h"
 
 #define ARGBUF_SIZE 1048576
 #define MC_AUTH_TOKEN_SIZE 4096
@@ -350,38 +351,6 @@ static void build_game_args(QStringList &args, McVersion *v,
     }
 }
 
-static int load_session_json(const char *path,
-    char *uuid_out, size_t uuid_size,
-    char *token_out, size_t token_size,
-    char *name_out, size_t name_size,
-    char *user_type_out, size_t user_type_size)
-{
-    QFile file(QString::fromUtf8(path));
-    if (!file.open(QIODevice::ReadOnly)) return 0;
-
-    QByteArray data = file.readAll();
-    file.close();
-
-    QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-    if (err.error != QJsonParseError::NoError || !doc.isObject()) return 0;
-
-    QJsonObject obj = doc.object();
-#define GET_STR(key, out, size) do { \
-    if (obj.contains(QStringLiteral(key))) { \
-        QString val = obj[QStringLiteral(key)].toString(); \
-        strncpy(out, val.toUtf8().constData(), size - 1); \
-    } \
-} while(0)
-
-    GET_STR("uuid", uuid_out, (int)uuid_size);
-    GET_STR("accessToken", token_out, (int)token_size);
-    GET_STR("name", name_out, (int)name_size);
-    GET_STR("userType", user_type_out, (int)user_type_size);
-
-    return name_out[0] != '\0';
-}
-
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     mc_console_init();
@@ -491,18 +460,26 @@ int main(int argc, char **argv) {
             snprintf(session_path, sizeof(session_path), "%s/session.json", appdata);
     }
 
-    char loaded_name[64] = "";
     if (session_path[0] && mc_path_exists(session_path)) {
-        if (load_session_json(session_path,
-            uuid_str, sizeof(uuid_str),
-            access_token, sizeof(access_token),
-            loaded_name, sizeof(loaded_name),
-            user_type, sizeof(user_type)))
-        {
-            mc_debug("Loaded uuid=[%s] access_token(length=%zu) user_type=[%s]", uuid_str, strlen(access_token), user_type);
-            if (!g_player_name[0] || strcmp(g_player_name, "Player") == 0)
-                strncpy(g_player_name, loaded_name, sizeof(g_player_name) - 1);
-            is_online = 1;
+        McAuthSession auth;
+        mc_auth_init(&auth);
+        if (mc_auth_load(&auth, session_path)) {
+            mc_info("Loaded session for %s, refreshing...", auth.name);
+            if (mc_auth_refresh(&auth)) {
+                mc_info("Session refreshed");
+                mc_auth_save(&auth, session_path);
+                strncpy(uuid_str, auth.uuid, sizeof(uuid_str) - 1);
+                strncpy(access_token, auth.access_token, sizeof(access_token) - 1);
+                strncpy(user_type, auth.user_type, sizeof(user_type) - 1);
+                if (!g_player_name[0] || strcmp(g_player_name, "Player") == 0)
+                    strncpy(g_player_name, auth.name, sizeof(g_player_name) - 1);
+                mc_debug("uuid=[%s] access_token(length=%zu) user_type=[%s]", uuid_str, strlen(access_token), user_type);
+                is_online = 1;
+            } else {
+                mc_warn("Session refresh failed: %s", auth.error[0] ? auth.error : "unknown error");
+            }
+        } else {
+            mc_warn("Failed to load session: %s", session_path);
         }
     }
 

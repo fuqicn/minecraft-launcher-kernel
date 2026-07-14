@@ -36,6 +36,37 @@ int mc_download_url(const char *url, const char *output_path, McDownloadResult *
 // URL mirror translation helpers
 int mc_download_translate_mojang_url(const char *url, char *mirror, size_t mirror_size, const char *mirror_type);
 
+// Mirror config (loaded from JSON, replaces hardcoded rules)
+#define MC_MIRROR_MAX_RULES 16
+#define MC_MIRROR_MAX_ENTRIES 8
+
+typedef struct {
+    char match[256];
+    char prefix[256];
+} McMirrorRule;
+
+typedef struct {
+    char name[64];
+    char base_url[512];
+    int rule_count;
+    McMirrorRule rules[MC_MIRROR_MAX_RULES];
+} McMirrorEntry;
+
+// Load mirror config from a JSON file (merges into loaded configs).
+int mc_mirror_load_config(const char *path);
+
+// Load mirror config from a JSON string (merges into loaded configs). 
+int mc_mirror_load_config_json(const char *json_data);
+
+// Clear all loaded configs (reverts to hardcoded fallback).
+void mc_mirror_clear_config(void);
+
+// Get the number of loaded mirror entries.
+int mc_mirror_config_count(void);
+
+// Get a loaded mirror entry by index.
+const McMirrorEntry *mc_mirror_config_get(int index);
+
 // Mirror health probe
 #define MC_MIRROR_PROBE_TIMEOUT_MS 5000
 #define MC_MAX_MIRROR_TYPES 8

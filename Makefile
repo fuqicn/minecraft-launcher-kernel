@@ -90,9 +90,9 @@ installer.exe: installer/main.cpp $(LIB_A)
 	$(CXX) -o $@ installer_main.o $(LIB_A) $(QT_LDFLAGS) $(COMMON_LDFLAGS)
 
 # ---- mclaunch.exe ----
-mclaunch.exe: mclaunch/main.cpp $(LIB_A)
-	$(CXX) $(CXXFLAGS) -I$(LIB_INC) $(QT_CXXFLAGS) -c -o mclaunch_main.o mclaunch/main.cpp
-	$(CXX) -o $@ mclaunch_main.o $(LIB_A) $(QT_LDFLAGS) $(COMMON_LDFLAGS)
+mclaunch.exe: mclaunch/main.cpp $(LOGIN_PRIV_OBJ) $(LIB_A)
+	$(CXX) $(CXXFLAGS) -I$(LIB_INC) -I$(LOGIN_PRIV)/include $(QT_CXXFLAGS) -c -o mclaunch_main.o mclaunch/main.cpp
+	$(CXX) -o $@ mclaunch_main.o $(LOGIN_PRIV_OBJ) $(LIB_A) $(QT_LDFLAGS) $(COMMON_LDFLAGS)
 
 clean:
 	-del /Q $(subst /,\,$(LIB_OBJ)) 2>NUL

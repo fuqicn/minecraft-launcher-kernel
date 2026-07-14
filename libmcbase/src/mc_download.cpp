@@ -11,8 +11,115 @@
 #include <chrono>
 
 #include <QtCore/QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonValue>
 
 #define MIRROR_TEST_URL "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+
+// Loaded mirror configs (replaces hardcoded logic when populated)
+static McMirrorEntry g_mirror_configs[MC_MIRROR_MAX_ENTRIES];
+static int g_mirror_config_count = 0;
+
+static const McMirrorEntry *find_mirror_entry(const char *mirror_type) {
+    if (!mirror_type) return NULL;
+    for (int i = 0; i < g_mirror_config_count; i++)
+        if (strcmp(g_mirror_configs[i].name, mirror_type) == 0)
+            return &g_mirror_configs[i];
+    return NULL;
+}
+
+static int apply_mirror_entry(const McMirrorEntry *entry, const char *url, char *mirror, size_t mirror_size) {
+    // Try rules in order
+    for (int i = 0; i < entry->rule_count; i++) {
+        const char *match = entry->rules[i].match;
+        const char *found = strstr(url, match);
+        if (!found) continue;
+        // found the match string in url, extract what comes after it
+        const char *after_match = found + strlen(match);
+        if (entry->rules[i].prefix[0]) {
+            snprintf(mirror, mirror_size, "%s%s%s", entry->base_url, entry->rules[i].prefix, after_match);
+        } else {
+            snprintf(mirror, mirror_size, "%s%s", entry->base_url, after_match);
+        }
+        return 1;
+    }
+    // No rule matched: replace hostname with base_url
+    const char *scheme_end = strstr(url, "://");
+    if (!scheme_end) return 0;
+    const char *path_start = strchr(scheme_end + 3, '/');
+    if (!path_start) {
+        snprintf(mirror, mirror_size, "%s", entry->base_url);
+        return 1;
+    }
+    snprintf(mirror, mirror_size, "%s%s", entry->base_url, path_start);
+    return 1;
+}
+
+int mc_mirror_load_config_json(const char *json_data) {
+    if (!json_data) return 0;
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(json_data), &err);
+    if (err.error != QJsonParseError::NoError) return 0;
+    if (!doc.isArray()) return 0;
+    QJsonArray arr = doc.array();
+    for (int ai = 0; ai < arr.size() && g_mirror_config_count < MC_MIRROR_MAX_ENTRIES; ai++) {
+        QJsonObject obj = arr[ai].toObject();
+        if (obj.isEmpty()) continue;
+        McMirrorEntry *entry = &g_mirror_configs[g_mirror_config_count];
+        memset(entry, 0, sizeof(*entry));
+        QString name = obj.value("name").toString();
+        QString base = obj.value("base_url").toString();
+        if (name.isEmpty() || base.isEmpty()) continue;
+        strncpy(entry->name, name.toUtf8().constData(), sizeof(entry->name) - 1);
+        strncpy(entry->base_url, base.toUtf8().constData(), sizeof(entry->base_url) - 1);
+        QJsonArray rules = obj.value("rules").toArray();
+        for (int ri = 0; ri < rules.size() && entry->rule_count < MC_MIRROR_MAX_RULES; ri++) {
+            QJsonObject r = rules[ri].toObject();
+            QString match = r.value("match").toString();
+            QString prefix = r.value("prefix").toString();
+            if (match.isEmpty()) continue;
+            McMirrorRule *rule = &entry->rules[entry->rule_count];
+            strncpy(rule->match, match.toUtf8().constData(), sizeof(rule->match) - 1);
+            if (!prefix.isEmpty())
+                strncpy(rule->prefix, prefix.toUtf8().constData(), sizeof(rule->prefix) - 1);
+            entry->rule_count++;
+        }
+        g_mirror_config_count++;
+    }
+    return g_mirror_config_count > 0;
+}
+
+int mc_mirror_load_config(const char *path) {
+    if (!path) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 0) { fclose(f); return 0; }
+    char *data = (char *)malloc((size_t)len + 1);
+    if (!data) { fclose(f); return 0; }
+    fread(data, 1, (size_t)len, f);
+    data[len] = '\0';
+    fclose(f);
+    int ok = mc_mirror_load_config_json(data);
+    free(data);
+    return ok;
+}
+
+void mc_mirror_clear_config(void) {
+    g_mirror_config_count = 0;
+    memset(g_mirror_configs, 0, sizeof(g_mirror_configs));
+}
+
+int mc_mirror_config_count(void) { return g_mirror_config_count; }
+
+const McMirrorEntry *mc_mirror_config_get(int index) {
+    if (index < 0 || index >= g_mirror_config_count) return NULL;
+    return &g_mirror_configs[index];
+}
 
 void mc_downloader_init(McDownloader *dl) {
     memset(dl, 0, sizeof(McDownloader));
@@ -136,7 +243,17 @@ int mc_download_translate_mojang_url(const char *url, char *mirror, size_t mirro
         strncpy(mirror, url, mirror_size - 1);
         return 1;
     }
+    // Check loaded configs first
+    const McMirrorEntry *entry = find_mirror_entry(mirror_type);
+    if (entry)
+        return apply_mirror_entry(entry, url, mirror, mirror_size);
+    // Fall back to custom URL passthrough
+    if (strncmp(mirror_type, "http", 4) == 0) {
+        strncpy(mirror, mirror_type, mirror_size - 1);
+        return 1;
+    }
 
+    // Hardcoded fallback for known types
     const char *from_domain = NULL;
     const char *to_domain = NULL;
     int replace_all = 0;
@@ -210,10 +327,6 @@ int mc_download_translate_mojang_url(const char *url, char *mirror, size_t mirro
             from_domain = ".mojang.com";
             to_domain = "download.mcbbs.net";
         }
-    } else if (strncmp(mirror_type, "http", 4) == 0) {
-        // Custom mirror URL — pass through as-is
-        strncpy(mirror, mirror_type, mirror_size - 1);
-        return 1;
     } else {
         return 0;
     }

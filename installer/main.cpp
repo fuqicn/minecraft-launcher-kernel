@@ -562,6 +562,9 @@ int main(int argc, char **argv) {
     mc_console_init();
     mc_log_set_level(MC_LOG_INFO);
 
+    if (mc_mirror_load_config("mirrors.json"))
+        mc_info("Loaded mirror config from mirrors.json");
+
     const char *loader_type = nullptr;
     const char *loader_ver = nullptr;
     const char *java_path = nullptr;

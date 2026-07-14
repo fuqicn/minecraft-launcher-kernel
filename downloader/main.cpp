@@ -637,6 +637,9 @@ int main(int argc, char **argv) {
     mc_console_init();
     mc_log_set_level(MC_LOG_INFO);
 
+    if (mc_mirror_load_config("mirrors.json"))
+        mc_info("Loaded mirror config from mirrors.json");
+
     const char *lang = nullptr;
     for (int i = 1; i < argc - 1; i++)
         if (strcmp(argv[i], "--lang") == 0 && i + 1 < argc) lang = argv[++i];
