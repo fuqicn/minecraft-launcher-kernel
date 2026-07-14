@@ -34,6 +34,23 @@ static void del_version(McVersion *v) {
 
 static const char *g_mirror = nullptr;
 
+static void probe_and_select_mirror(const char **mirror_type) {
+    if (!mirror_type || !*mirror_type) return;
+    if (strcmp(*mirror_type, "auto") != 0) return;
+    mc_info("Probing mirrors...");
+    McMirrorProbe probes[MC_MAX_MIRROR_TYPES];
+    int n = mc_mirror_probe_all(probes, MC_MAX_MIRROR_TYPES);
+    for (int i = 0; i < n; i++) {
+        const char *status = probes[i].available ? "OK" : "DOWN";
+        mc_info("  %s: %s (%.0f ms)", probes[i].mirror_type, status, probes[i].latency_ms);
+    }
+    const char *best = mc_mirror_select_best(probes, n);
+    if (strcmp(best, *mirror_type) != 0) {
+        mc_info("Auto-selected mirror: %s", best);
+        *mirror_type = best;
+    }
+}
+
 static void translate_url(const char *src, char *dst, size_t dst_size) {
     if (g_mirror && strcmp(g_mirror, "mojang") != 0) {
         if (!mc_download_translate_mojang_url(src, dst, static_cast<int>(dst_size), g_mirror))
@@ -644,6 +661,7 @@ int main(int argc, char **argv) {
             else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc)
                 thread_count = std::max(1, std::min(128, atoi(argv[++i])));
         }
+        probe_and_select_mirror(&mirror_type);
         g_mirror = mirror_type;
         if (platform_opt) mc_platform_set(platform_opt);
         return cmd_java_download(java_ver, output_dir, thread_count);
@@ -658,6 +676,7 @@ int main(int argc, char **argv) {
             if (thread_count > 128) thread_count = 128;
         }
     }
+    probe_and_select_mirror(&mirror_type);
     g_mirror = mirror_type;
     if (platform_opt) mc_platform_set(platform_opt);
 

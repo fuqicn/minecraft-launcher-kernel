@@ -8,8 +8,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
+#include <chrono>
 
 #include <QtCore/QFile>
+
+#define MIRROR_TEST_URL "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 
 void mc_downloader_init(McDownloader *dl) {
     memset(dl, 0, sizeof(McDownloader));
@@ -245,4 +248,67 @@ int mc_download_translate_mojang_url(const char *url, char *mirror, size_t mirro
     strncpy(mirror, replaced, mirror_size - 1);
     free(replaced);
     return 1;
+}
+
+const char *mc_mirror_get_test_url(void) {
+    return MIRROR_TEST_URL;
+}
+
+int mc_mirror_probe(const char *mirror_type, McMirrorProbe *result) {
+    if (!result) return 0;
+    memset(result, 0, sizeof(*result));
+    if (mirror_type)
+        strncpy(result->mirror_type, mirror_type, sizeof(result->mirror_type) - 1);
+    else
+        strncpy(result->mirror_type, "mojang", sizeof(result->mirror_type) - 1);
+
+    char test_url[2048];
+    if (!mc_download_translate_mojang_url(MIRROR_TEST_URL, test_url, sizeof(test_url),
+                                          result->mirror_type))
+        return 0;
+
+    McHttpClient client;
+    mc_http_init(&client);
+    mc_http_set_timeout(&client, MC_MIRROR_PROBE_TIMEOUT_MS);
+
+    auto t1 = std::chrono::steady_clock::now();
+    McHttpResponse *resp = mc_http_head(&client, test_url);
+    auto t2 = std::chrono::steady_clock::now();
+
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+    result->latency_ms = (double)ms;
+
+    if (resp) {
+        result->status_code = (int)resp->status_code;
+        result->available = (resp->success && resp->status_code >= 200 && resp->status_code < 400) ? 1 : 0;
+        mc_http_response_free(resp);
+    }
+    return 1;
+}
+
+int mc_mirror_probe_all(McMirrorProbe *results, int max_results) {
+    if (!results) return 0;
+    const char *known_types[] = { "mojang", "bmclapi", "mcbbs", NULL };
+    int count = 0;
+    for (int i = 0; known_types[i] && count < max_results; i++)
+        if (mc_mirror_probe(known_types[i], &results[count]))
+            count++;
+    return count;
+}
+
+const char *mc_mirror_select_best(McMirrorProbe *results, int count) {
+    if (!results || count <= 0) return "mojang";
+    int best = -1;
+    for (int i = 0; i < count; i++) {
+        if (!results[i].available) continue;
+        if (best < 0 || results[i].latency_ms < results[best].latency_ms)
+            best = i;
+    }
+    if (best >= 0) return results[best].mirror_type;
+    // No mirror available, fall back to mojang
+    for (int i = 0; i < count; i++) {
+        if (strcmp(results[i].mirror_type, "mojang") == 0)
+            return "mojang";
+    }
+    return "mojang";
 }

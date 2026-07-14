@@ -36,4 +36,27 @@ int mc_download_url(const char *url, const char *output_path, McDownloadResult *
 // URL mirror translation helpers
 int mc_download_translate_mojang_url(const char *url, char *mirror, size_t mirror_size, const char *mirror_type);
 
+// Mirror health probe
+#define MC_MIRROR_PROBE_TIMEOUT_MS 5000
+#define MC_MAX_MIRROR_TYPES 8
+
+typedef struct {
+    char mirror_type[64];
+    double latency_ms;
+    int available;
+    int status_code;
+} McMirrorProbe;
+
+// Probe a specific mirror type. Returns 1 if probe was attempted (result may still show unavailable).
+int mc_mirror_probe(const char *mirror_type, McMirrorProbe *result);
+
+// Probe all known mirror types. Returns number of probed types.
+int mc_mirror_probe_all(McMirrorProbe *results, int max_results);
+
+// Find the best available mirror from probe results. Returns mirror_type string or "mojang".
+const char *mc_mirror_select_best(McMirrorProbe *results, int count);
+
+// Get the test URL used for mirror probing.
+const char *mc_mirror_get_test_url(void);
+
 #endif

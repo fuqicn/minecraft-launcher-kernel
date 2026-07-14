@@ -579,6 +579,17 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--mirror") == 0 && i + 1 < argc) mirror_type = argv[++i];
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "help") == 0) { print_help(); return 0; }
     }
+    if (mirror_type && strcmp(mirror_type, "auto") == 0) {
+        mc_info("Probing mirrors...");
+        McMirrorProbe probes[MC_MAX_MIRROR_TYPES];
+        int n = mc_mirror_probe_all(probes, MC_MAX_MIRROR_TYPES);
+        for (int i = 0; i < n; i++) {
+            const char *status = probes[i].available ? "OK" : "DOWN";
+            mc_info("  %s: %s (%.0f ms)", probes[i].mirror_type, status, probes[i].latency_ms);
+        }
+        mirror_type = mc_mirror_select_best(probes, n);
+        mc_info("Auto-selected mirror: %s", mirror_type);
+    }
     g_mirror = mirror_type;
 
     if (argc < 2 || argv[1][0] == '-') {
