@@ -32,7 +32,7 @@ extern "C" void mc_http_init(McHttpClient *client) {
     if (!client) return;
     memset(client, 0, sizeof(McHttpClient));
     client->timeout_ms = 30000;
-    strcpy(client->user_agent, "mclauncher/1.0");
+    strcpy(client->user_agent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 }
 
 extern "C" void mc_http_set_proxy(McHttpClient *client, const char *host, int port) {
@@ -62,8 +62,8 @@ static McHttpResponse *do_request(McHttpClient *client, const char *url,
     }
 
     QNetworkRequest req(qurl);
-    req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
     req.setRawHeader("User-Agent", QByteArray::fromStdString(client->user_agent));
+    req.setRawHeader("Accept", "*/*");
     req.setTransferTimeout(client->timeout_ms);
 
     if (client->use_proxy) {

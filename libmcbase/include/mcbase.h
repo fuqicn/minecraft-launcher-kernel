@@ -13,5 +13,6 @@
 #include "mc_download_qt.h"
 #include "mc_i18n.h"
 #include "mc_zip.h"
+#include "mc_mod.h"
 
 #endif

@@ -347,56 +347,60 @@ static int install_neoforge(const char *mc_ver, const char *nforge_ver, const ch
     if (nforge_ver && *nforge_ver) {
         strncpy(version_buf, nforge_ver, sizeof(version_buf) - 1);
     } else {
+        // Select latest version that matches this MC version
         QJsonArray versions_arr = json.value("versions").toArray();
+        QString mcPrefix = QString::fromUtf8(mc_ver) + "-";
         for (int i = 0; i < versions_arr.size(); i++) {
             QJsonValue item = versions_arr[i];
             if (item.isString()) {
-                QString itemStr = item.toString();
-                strncpy(version_buf, itemStr.toUtf8().constData(), sizeof(version_buf) - 1);
+                QString v = item.toString();
+                if (v.startsWith(mcPrefix))
+                    strncpy(version_buf, v.toUtf8().constData(), sizeof(version_buf) - 1);
             }
         }
     }
-    if (!version_buf[0]) { mc_error("No NeoForge version found"); return 1; }
+    if (!version_buf[0]) { mc_error("No NeoForge version found for MC %s", mc_ver); return 1; }
     mc_info("NeoForge version: %s", version_buf);
 
-    // Try profile JSON first
-    char profile_url[1024];
-    snprintf(profile_url, sizeof(profile_url),
-             "https://maven.neoforged.net/releases/net/neoforged/%s/%s/%s-%s-client.json",
-             pkg, version_buf, pkg, version_buf);
-    McVersion *v = new_version();
-    if (!v) return 1;
-    if (mc_version_fetch(v, profile_url)) {
-        mc_info("NeoForge profile JSON fetched");
-        make_loader_version_id("neoforge", version_buf, mc_ver, v, v->raw_json);
-        save_version_profile(v, mc_dir);
-        del_version(v);
-        return 0;
-    }
-
-    // Fall back to installer JAR
-    mc_warn("NeoForge profile JSON not available, downloading installer JAR");
+    // NeoForge does not publish -client.json files; use installer JAR directly
+    mc_info("Downloading NeoForge installer JAR...");
     char dl_url[1024], output_path[MC_PATH_MAX];
     snprintf(dl_url, sizeof(dl_url),
              "https://maven.neoforged.net/releases/net/neoforged/%s/%s/%s-%s-installer.jar",
              pkg, version_buf, pkg, version_buf);
     snprintf(output_path, sizeof(output_path), "%s/neoforge-%s-installer.jar", mc_dir, version_buf);
-    if (download_file(dl_url, output_path)) {
-        mc_info("NeoForge installer saved: %s", output_path);
-        int installed = run_installer_jar(java_path, output_path, mc_dir);
-        if (installed) {
-            mc_info("NeoForge installer completed");
-            del_version(v);
-            return 0;
+    if (!download_file(dl_url, output_path)) {
+        // If bare version fails, try with MC prefix (e.g. "47.1.82" -> "1.20.1-47.1.82")
+        if (!nforge_ver || strncmp(version_buf, mc_ver, strlen(mc_ver)) != 0) {
+            char alt_ver[128];
+            snprintf(alt_ver, sizeof(alt_ver), "%s-%s", mc_ver, version_buf);
+            char alt_url[1024];
+            snprintf(alt_url, sizeof(alt_url),
+                     "https://maven.neoforged.net/releases/net/neoforged/%s/%s/%s-%s-installer.jar",
+                     pkg, alt_ver, pkg, alt_ver);
+            char alt_output[MC_PATH_MAX];
+            snprintf(alt_output, sizeof(alt_output), "%s/neoforge-%s-installer.jar", mc_dir, alt_ver);
+            if (download_file(alt_url, alt_output)) {
+                mc_info("NeoForge installer saved: %s", alt_output);
+                strncpy(output_path, alt_output, sizeof(output_path) - 1);
+                strncpy(version_buf, alt_ver, sizeof(version_buf) - 1);
+                goto run_installer;
+            }
         }
-        mc_warn("NeoForge installer could not be run automatically");
-        mc_warn("Run it manually: java -jar \"%s\" --installClient \"%s\"", output_path, mc_dir);
-        del_version(v);
+        mc_error("Failed to download NeoForge installer");
+        return 1;
+    }
+
+run_installer:
+    mc_info("NeoForge installer saved: %s", output_path);
+    int installed = run_installer_jar(java_path, output_path, mc_dir);
+    if (installed) {
+        mc_info("NeoForge installer completed");
         return 0;
     }
-    mc_error("Failed to download NeoForge installer");
-    del_version(v);
-    return 1;
+    mc_warn("NeoForge installer could not be run automatically");
+    mc_warn("Run it manually: java -jar \"%s\" --installClient \"%s\"", output_path, mc_dir);
+    return 0;
 }
 
 // ---- OptiFine ----
@@ -419,46 +423,42 @@ static int install_optifine(const char *mc_ver, const char *mc_dir, const char *
     }
     QJsonArray list = doc.array();
 
-    const char *filename = nullptr;
     QByteArray filenameBytes;
     for (int i = 0; i < list.size(); i++) {
         QJsonObject entry = list[i].toObject();
         QString ver = entry.value("mcversion").toString();
         if (ver == QString::fromUtf8(mc_ver)) {
             filenameBytes = entry.value("filename").toString().toUtf8();
-            filename = filenameBytes.constData();
             break;
         }
     }
-    if (!filename) { mc_error("No OptiFine found for MC %s", mc_ver); return 1; }
+    if (filenameBytes.isEmpty()) { mc_error("No OptiFine found for MC %s", mc_ver); return 1; }
+    const char *filename = filenameBytes.constData();
     mc_info("OptiFine: %s", filename);
 
     char dl_url[512], dl_url2[512], output_path[MC_PATH_MAX];
-    snprintf(dl_url, sizeof(dl_url), "https://bmclapi2.bangbang93.com/optifine/%s/%s", mc_ver, filename);
-    snprintf(dl_url2, sizeof(dl_url2), "https://bmclapi2.bangbang93.com/optifine/%s/HD_U/%s", mc_ver, filename);
+    snprintf(dl_url, sizeof(dl_url), "https://bmclapi2.bangbang93.com/optifine/download?f=%s", filename);
+    snprintf(dl_url2, sizeof(dl_url2), "https://optifine.net/download?f=%s", filename);
     snprintf(output_path, sizeof(output_path), "%s/%s", mc_dir, filename);
     if (!download_file(dl_url, output_path))
         if (!download_file(dl_url2, output_path))
             { mc_error("Failed to download OptiFine"); return 1; }
     mc_info("OptiFine saved: %s", output_path);
 
-    // Try to extract with java -jar --extract
-    mc_info("Attempting to extract OptiFine...");
-    if (mc_path_exists(java_path)) {
-        QProcess proc;
-        QStringList args;
-        args << "-jar" << QString::fromUtf8(output_path)
-             << "--extract" << QString::fromUtf8(mc_dir);
-        proc.start(QString::fromUtf8(java_path), args);
-        if (proc.waitForFinished(30000) && proc.exitCode() == 0) {
-            mc_info("OptiFine extracted to %s", mc_dir);
-        } else {
-            mc_warn("OptiFine auto-extract failed; open the JAR manually to install:");
-            mc_warn("  java -jar \"%s\"", output_path);
-        }
-    } else {
-        mc_warn("No Java runtime found; extract manually: java -jar \"%s\"", output_path);
+    // OptiFine doesn't support CLI extraction on this version.
+    // Copy the installer JAR to mods/ (for Forge) and notify user.
+    char mods_dir[MC_PATH_MAX];
+    snprintf(mods_dir, sizeof(mods_dir), "%s/mods", mc_dir);
+    mc_path_mkdir(mods_dir);
+    char mod_path[MC_PATH_MAX];
+    snprintf(mod_path, sizeof(mod_path), "%s/%s", mods_dir, filename);
+    if (mc_path_exists(output_path)) {
+        QFile::copy(QString::fromUtf8(output_path), QString::fromUtf8(mod_path));
     }
+    mc_info("OptiFine downloaded to: %s", output_path);
+    mc_info("For Forge users: the file has been copied to mods/ folder.");
+    mc_info("For standalone use, run the GUI installer:");
+    mc_warn("  java -jar \"%s\"", output_path);
     return 0;
 }
 

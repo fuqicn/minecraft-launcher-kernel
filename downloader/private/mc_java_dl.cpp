@@ -48,7 +48,8 @@ int mc_java_download_manifest(int major_version, const char *mirror, McJavaFileL
     QJsonObject root = doc.object();
 
     const char *version_key = "jre-legacy";
-    if (major_version >= 21) version_key = "java-runtime-delta";
+    if (major_version >= 22) version_key = "java-runtime-epsilon";
+    else if (major_version >= 21) version_key = "java-runtime-delta";
     else if (major_version >= 17) version_key = "java-runtime-beta";
     else if (major_version >= 16) version_key = "java-runtime-alpha";
 

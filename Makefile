@@ -23,7 +23,8 @@ LIB_SRC_FILES = \
 	$(LIB_SRC)/mc_download_qt.cpp \
 	$(LIB_SRC)/mc_version.cpp \
 	$(LIB_SRC)/mc_library.cpp \
-	$(LIB_SRC)/mc_manifest.cpp
+	$(LIB_SRC)/mc_manifest.cpp \
+	$(LIB_SRC)/mc_mod.cpp
 
 LIB_OBJ = $(LIB_SRC_FILES:.cpp=.o)
 LIB_A = libmcbase.a
@@ -42,7 +43,7 @@ DL_PRIV_OBJ = $(DL_PRIV_SRC:.cpp=.o)
 
 .PHONY: all clean
 
-all: mcver.exe downloader.exe mcjava.exe mclaunch.exe mcsearch.exe login.exe installer.exe
+all: mcver.exe downloader.exe mcjava.exe mclaunch.exe mcsearch.exe login.exe installer.exe modsearch.exe modver.exe
 
 $(LIB_A): $(LIB_OBJ)
 	$(AR) rcs $@ $^
@@ -94,12 +95,22 @@ mclaunch.exe: mclaunch/main.cpp $(LOGIN_PRIV_OBJ) $(LIB_A)
 	$(CXX) $(CXXFLAGS) -I$(LIB_INC) -I$(LOGIN_PRIV)/include $(QT_CXXFLAGS) -c -o mclaunch_main.o mclaunch/main.cpp
 	$(CXX) -o $@ mclaunch_main.o $(LOGIN_PRIV_OBJ) $(LIB_A) $(QT_LDFLAGS) $(COMMON_LDFLAGS)
 
+# ---- modsearch.exe ----
+modsearch.exe: modsearch/main.cpp $(LIB_A)
+	$(CXX) $(CXXFLAGS) -I$(LIB_INC) $(QT_CXXFLAGS) -c -o modsearch_main.o modsearch/main.cpp
+	$(CXX) -o $@ modsearch_main.o $(LIB_A) $(QT_LDFLAGS) $(COMMON_LDFLAGS)
+
+# ---- modver.exe ----
+modver.exe: modver/main.cpp $(LIB_A)
+	$(CXX) $(CXXFLAGS) -I$(LIB_INC) $(QT_CXXFLAGS) -c -o modver_main.o modver/main.cpp
+	$(CXX) -o $@ modver_main.o $(LIB_A) $(QT_LDFLAGS) $(COMMON_LDFLAGS)
+
 clean:
 	-del /Q $(subst /,\,$(LIB_OBJ)) 2>NUL
 	-del /Q $(subst /,\,$(MCJAVA_PRIV_OBJ)) 2>NUL
 	-del /Q $(subst /,\,$(LOGIN_PRIV_OBJ)) 2>NUL
 	-del /Q $(subst /,\,$(DL_PRIV_OBJ)) 2>NUL
 	-del /Q $(LIB_A) 2>NUL
-	-del /Q mcver_main.o downloader_main.o mcjava_main.o mclaunch_main.o mcsearch_main.o login_main.o installer_main.o 2>NUL
-	-del /Q mcver.exe downloader.exe mcjava.exe mclaunch.exe mcsearch.exe login.exe installer.exe 2>NUL
+	-del /Q mcver_main.o downloader_main.o mcjava_main.o mclaunch_main.o mcsearch_main.o login_main.o installer_main.o modsearch_main.o modver_main.o 2>NUL
+	-del /Q mcver.exe downloader.exe mcjava.exe mclaunch.exe mcsearch.exe login.exe installer.exe modsearch.exe modver.exe 2>NUL
 	-del /Q test_*.exe 2>NUL

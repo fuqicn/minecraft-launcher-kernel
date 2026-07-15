@@ -32,8 +32,18 @@ static void maven_to_path(const char *name, char *out, size_t out_size, int with
 }
 
 int mc_library_resolve_path(const char *name, char *out, size_t out_size) {
-    maven_to_path(name, out, out_size, 0, NULL);
-    return out[0] != '\0';
+    char **parts = NULL;
+    int n = mc_strsplit(name, ':', &parts);
+    int ret = 0;
+    if (n >= 4) {
+        // Has classifier (e.g. group:artifact:version:classifier)
+        maven_to_path(name, out, out_size, 1, parts[3]);
+    } else {
+        maven_to_path(name, out, out_size, 0, NULL);
+    }
+    if (out[0] != '\0') ret = 1;
+    mc_strsplit_free(parts, n);
+    return ret;
 }
 
 int mc_library_resolve_url(const char *name, const char *mirror_base, char *out, size_t out_size) {

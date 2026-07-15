@@ -143,8 +143,11 @@ static int try_download_url(McDownloader *dl, const char *url, const char *outpu
     mc_http_set_timeout(&client, dl->timeout_ms);
     mc_info("  Downloading: %s", url);
     McHttpResponse *resp = mc_http_get(&client, url);
-    if (!resp || !resp->success || !resp->data) {
-        if (resp) mc_http_response_free(resp);
+    if (!resp) {
+        return 0;
+    }
+    if (!resp->success || !resp->data) {
+        mc_http_response_free(resp);
         return 0;
     }
     if (resp->status_code >= 400) {
@@ -191,21 +194,26 @@ static int try_download_url(McDownloader *dl, const char *url, const char *outpu
 int mc_download_file(McDownloader *dl, McDownloadTask *task, McDownloadResult *result) {
     if (!dl || !task || !result) return 0;
     memset(result, 0, sizeof(McDownloadResult));
-    // Try main URL first
-    if (task->url[0]) {
-        if (try_download_url(dl, task->url, task->output_path,
-                            task->expected_sha1, task->expected_size,
-                            &result->downloaded_bytes))
-        {
-            result->success = 1;
-            return 1;
-        }
-    }
-    // Try mirrors
-    for (int i = 0; i < dl->mirror_count; i++) {
-        if (dl->mirrors[i][0]) {
-            mc_info("  Trying mirror %d: %s", i + 1, dl->mirrors[i]);
-            if (try_download_url(dl, dl->mirrors[i], task->output_path,
+
+    const char *urls_to_try[1 + MC_DL_MAX_MIRRORS];
+    int url_count = 0;
+    if (task->url[0])
+        urls_to_try[url_count++] = task->url;
+    for (int i = 0; i < dl->mirror_count && url_count < 1 + MC_DL_MAX_MIRRORS; i++)
+        if (dl->mirrors[i][0])
+            urls_to_try[url_count++] = dl->mirrors[i];
+
+    for (int ui = 0; ui < url_count; ui++) {
+        for (int attempt = 0; attempt <= dl->max_retries; attempt++) {
+            if (attempt > 0) {
+                int backoff_ms = 500 * (1 << (attempt - 1));
+                if (backoff_ms > 5000) backoff_ms = 5000;
+                mc_http_sleep(backoff_ms);
+            }
+            const char *cur = urls_to_try[ui];
+            if (ui > 0 || attempt > 0)
+                mc_info("  Trying %s (attempt %d/%d)", cur, attempt + 1, dl->max_retries + 1);
+            if (try_download_url(dl, cur, task->output_path,
                                 task->expected_sha1, task->expected_size,
                                 &result->downloaded_bytes))
             {
@@ -214,6 +222,7 @@ int mc_download_file(McDownloader *dl, McDownloadTask *task, McDownloadResult *r
             }
         }
     }
+
     {
         std::ostringstream oss;
         oss << "Failed to download " << task->url << " after all attempts";

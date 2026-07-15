@@ -11,12 +11,51 @@
 #include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtCore/QElapsedTimer>
+#include <QtCore/QThread>
+#include <QtNetwork/QHostInfo>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
 
 #include <QtCore/QFile>
 #include <QtCore/QDir>
+#include <thread>
+#include <atomic>
+#include <vector>
+
+static void setup_dl_request(QNetworkRequest &req, long timeout_ms) {
+    req.setTransferTimeout(static_cast<int>(timeout_ms));
+    req.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    req.setRawHeader("Accept", "*/*");
+    req.setRawHeader("Accept-Encoding", "gzip, deflate");
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+}
+
+// ---- DNS pre-resolution ----
+
+void mc_qt_dns_prefetch(void) {
+    std::thread t([]() {
+        static const char *hosts[] = {
+            "piston-meta.mojang.com",
+            "piston-data.mojang.com",
+            "launcher.mojang.com",
+            "launchermeta.mojang.com",
+            "resources.download.minecraft.net",
+            "libraries.minecraft.net",
+            "maven.fabricmc.net",
+            "maven.minecraftforge.net",
+            "maven.neoforged.net",
+            "bmclapi2.bangbang93.com",
+            "api.modrinth.com",
+            "api.curseforge.com",
+            NULL
+        };
+        for (int i = 0; hosts[i]; i++) {
+            QHostInfo::fromName(QString::fromUtf8(hosts[i]));
+        }
+    });
+    t.detach();
+}
 
 // ---- Chunked download ----
 
@@ -27,9 +66,7 @@ static int do_chunk_download(const char *url, long long start, long long end,
     QNetworkAccessManager nam;
     QUrl qurl(QString::fromUtf8(url));
     QNetworkRequest req(qurl);
-    req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
-    req.setTransferTimeout(static_cast<int>(timeout_ms));
-    req.setRawHeader("User-Agent", "mclauncher/1.0");
+    setup_dl_request(req, timeout_ms);
     req.setRawHeader("Range", QString("bytes=%1-%2").arg(start).arg(end).toUtf8());
 
     QNetworkReply *reply = nam.get(req);
@@ -56,7 +93,6 @@ static int do_chunk_download(const char *url, long long start, long long end,
     if (static_cast<long long>(data.size()) != (end - start + 1))
         return 0;
 
-    // Write to chunk temp file: output.chunk.N (sequential index)
     char chunk_path[2048];
     snprintf(chunk_path, sizeof(chunk_path), "%s.chunk.%d", output_path, chunk_idx);
     FILE *f = fopen(chunk_path, "wb");
@@ -172,9 +208,7 @@ static int do_single_download(const char *url, const char *output_path,
     QNetworkAccessManager nam;
     QUrl qurl(QString::fromUtf8(url));
     QNetworkRequest req(qurl);
-    req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
-    req.setTransferTimeout(static_cast<int>(timeout_ms));
-    req.setRawHeader("User-Agent", "mclauncher/1.0");
+    setup_dl_request(req, timeout_ms);
 
     QNetworkReply *reply = nam.get(req);
 
@@ -251,9 +285,14 @@ int mc_qt_download_file_progress(const char *url, const char *output_path,
     }
 
     if (num_chunks == 1) {
-        // Single download with retry
+        // Single download with retry and exponential backoff
         int max_retries = 2;
         for (int attempt = 0; attempt <= max_retries; attempt++) {
+            if (attempt > 0) {
+                int backoff_ms = 500 * (1 << (attempt - 1));
+                if (backoff_ms > 5000) backoff_ms = 5000;
+                QThread::msleep(backoff_ms);
+            }
             int r = do_single_download(url, output_path, expected_sha1, expected_size, timeout_ms);
             if (r) return 1;
             if (mc_path_exists(output_path)) QFile::remove(QString::fromUtf8(output_path));
@@ -261,7 +300,7 @@ int mc_qt_download_file_progress(const char *url, const char *output_path,
         return 0;
     }
 
-    // Chunked download
+    // Chunked download — serial chunks (thread pool already provides file-level parallelism)
     long long chunk_size = expected_size / num_chunks;
     int chunk_ok = 0;
     int chunk_fail = 0;
@@ -270,14 +309,17 @@ int mc_qt_download_file_progress(const char *url, const char *output_path,
         long long start = static_cast<long long>(i) * chunk_size;
         long long end = (i == num_chunks - 1) ? (expected_size - 1) : (start + chunk_size - 1);
 
-        // Retry each chunk up to 2 times
         int chunk_success = 0;
         for (int attempt = 0; attempt <= 2; attempt++) {
+            if (attempt > 0) {
+                int backoff_ms = 500 * (1 << (attempt - 1));
+                if (backoff_ms > 5000) backoff_ms = 5000;
+                QThread::msleep(backoff_ms);
+            }
             if (do_chunk_download(url, start, end, output_path, i, expected_size, timeout_ms)) {
                 chunk_success = 1;
                 break;
             }
-            // Clean up failed chunk
             char chunk_path[2048];
             snprintf(chunk_path, sizeof(chunk_path), "%s.chunk.%d", output_path, i);
             QFile::remove(QString::fromUtf8(chunk_path));
@@ -311,4 +353,55 @@ int mc_qt_download_file_progress(const char *url, const char *output_path,
         return 0;
     }
     return 1;
+}
+
+// ---- Multi-URL parallel download ----
+
+int mc_qt_download_file_multi(const char **urls, int url_count,
+                               const char *output_path,
+                               const char *expected_sha1, long expected_size,
+                               long timeout_ms)
+{
+    if (!urls || url_count <= 0 || !output_path) return 0;
+
+    // Single URL: direct download in calling thread (reuses its QNAM)
+    if (url_count == 1)
+        return mc_qt_download_file(urls[0], output_path, expected_sha1, expected_size, timeout_ms);
+
+    cleanup_temp_files(output_path);
+
+    std::atomic<int> winner{0};
+    std::vector<std::thread> threads;
+
+    for (int i = 0; i < url_count; i++) {
+        threads.emplace_back([i, &winner, &urls, output_path, expected_sha1, expected_size, timeout_ms]() {
+            if (winner.load()) return;
+
+            char tmp[2048];
+            snprintf(tmp, sizeof(tmp), "%s.multi.%d", output_path, i);
+
+            if (do_single_download(urls[i], tmp, expected_sha1, expected_size, timeout_ms)) {
+                int expected = 0;
+                if (winner.compare_exchange_strong(expected, 1)) {
+                    char dir[1024];
+                    mc_path_dirname(output_path, dir, sizeof(dir));
+                    mc_path_mkdir_p(dir);
+                    QFile::remove(QString::fromUtf8(output_path));
+                    QFile::rename(QString::fromUtf8(tmp), QString::fromUtf8(output_path));
+                } else {
+                    QFile::remove(QString::fromUtf8(tmp));
+                }
+            }
+        });
+    }
+    for (auto &t : threads)
+        if (t.joinable()) t.join();
+
+    for (int i = 0; i < url_count; i++) {
+        char tmp[2048];
+        snprintf(tmp, sizeof(tmp), "%s.multi.%d", output_path, i);
+        QFile::remove(QString::fromUtf8(tmp));
+    }
+
+    return winner.load();
 }

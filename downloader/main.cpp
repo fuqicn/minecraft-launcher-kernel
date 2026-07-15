@@ -21,6 +21,7 @@
 #include <QtCore/QCoreApplication>
 #include <QtCore/QProcess>
 #include <QtCore/QStringList>
+#include <QtCore/QTimer>
 
 static McVersion *new_version(void) {
     McVersion *v = static_cast<McVersion*>(malloc(sizeof(McVersion)));
@@ -64,6 +65,17 @@ static int fetch_version(McVersion *v, const char *id) {
     if (g_mirror)
         return mc_version_fetch_by_id_mirror(v, id, g_mirror);
     return mc_version_fetch_by_id(v, id);
+}
+
+static int fetch_version_or_local(McVersion *v, const char *id, const char *mc_dir) {
+    if (fetch_version(v, id)) return 1;
+    char local_path[MC_PATH_MAX];
+    snprintf(local_path, sizeof(local_path), "%s/versions/%s/%s.json", mc_dir, id, id);
+    if (mc_path_exists(local_path) && mc_version_parse_file(v, local_path)) {
+        mc_info("Loaded local version JSON: %s", local_path);
+        return 1;
+    }
+    return 0;
 }
 
 class DownloadPool {
@@ -146,6 +158,7 @@ static void print_help(void) {
     oss << "  natives <version-id>    " << mc_i18n("download_natives") << std::endl;
     oss << "  assets <version-id>     " << mc_i18n("download_assets") << std::endl;
     oss << "  logging <version-id>    " << mc_i18n("download_logging") << std::endl;
+    oss << "  mod <url>               " << mc_i18n("mod_download") << std::endl;
     oss << "  url <url> --output <path> " << mc_i18n("download_url") << std::endl;
     oss << "  help                    " << mc_i18n("show_help") << std::endl;
     oss << std::endl;
@@ -179,73 +192,127 @@ static void run_works(DownloadPool &pool, std::vector<WorkItem> &works, const ch
     mc_info("%s: %d %s", label, total, mc_i18n("files"));
     std::atomic<int> done{0};
     for (auto &w : works) {
-        pool.enqueue([&w, &done, total, label]() {
-            w.success = download_file_with_progress(w.url.c_str(), w.output_path.c_str(),
-                w.expected_sha1.empty() ? nullptr : w.expected_sha1.c_str(),
-                w.expected_size, label);
-            ++done;
-            if (!w.fallback_url.empty() && !w.success) {
-                mc_warn("Retrying with fallback URL...");
-                w.success = download_file_with_progress(w.fallback_url.c_str(), w.output_path.c_str(),
+        pool.enqueue([&w, &done, total, label_str = std::string(label)]() {
+            const char *fname = strrchr(w.output_path.c_str(), '/');
+            if (!fname) fname = strrchr(w.output_path.c_str(), '\\');
+            if (fname) fname++; else fname = w.output_path.c_str();
+            mc_info("[%s] %s...", label_str.c_str(), fname);
+
+            if (w.fallback_url.empty()) {
+                w.success = mc_qt_download_file(w.url.c_str(), w.output_path.c_str(),
                     w.expected_sha1.empty() ? nullptr : w.expected_sha1.c_str(),
-                    w.expected_size, label);
+                    w.expected_size, g_timeout_ms);
+            } else {
+                const char *urls[2] = { w.url.c_str(), w.fallback_url.c_str() };
+                w.success = mc_qt_download_file_multi(urls, 2,
+                    w.output_path.c_str(),
+                    w.expected_sha1.empty() ? nullptr : w.expected_sha1.c_str(),
+                    w.expected_size, g_timeout_ms);
             }
+
+            if (w.success)
+                mc_info("[%s] %s: OK", label_str.c_str(), fname);
+            else
+                mc_warn("[%s] %s: %s", label_str.c_str(), fname, mc_i18n("download_failed"));
+            ++done;
         });
     }
     pool.wait();
 }
 
 static int download_version_json(McVersion *v, const char *version_id, const char *mc_dir) {
-    if (!fetch_version(v, version_id)) {
-        mc_error("Failed to fetch version: %s", version_id);
-        return 0;
+    if (fetch_version(v, version_id)) {
+        char versions_dir[MC_PATH_MAX];
+        mc_path_join(mc_dir, "versions", versions_dir, sizeof(versions_dir));
+        char ver_dir[MC_PATH_MAX];
+        mc_path_join(versions_dir, v->id, ver_dir, sizeof(ver_dir));
+        mc_path_mkdir_p(ver_dir);
+        char json_path[MC_PATH_MAX];
+        snprintf(json_path, sizeof(json_path), "%s/%s.json", ver_dir, v->id);
+        if (!v->raw_json.isEmpty()) {
+            QJsonDocument doc(v->raw_json);
+            QByteArray json_bytes = doc.toJson(QJsonDocument::Indented);
+            FILE *f = fopen(json_path, "wb");
+            if (f) { fwrite(json_bytes.constData(), 1, json_bytes.size(), f); fclose(f); }
+        }
+        mc_info("Version JSON saved: %s/%s.json", ver_dir, v->id);
+        return 1;
     }
-    char versions_dir[MC_PATH_MAX];
-    mc_path_join(mc_dir, "versions", versions_dir, sizeof(versions_dir));
-    char ver_dir[MC_PATH_MAX];
-    mc_path_join(versions_dir, v->id, ver_dir, sizeof(ver_dir));
-    mc_path_mkdir_p(ver_dir);
-    char json_path[MC_PATH_MAX];
-    snprintf(json_path, sizeof(json_path), "%s/%s.json", ver_dir, v->id);
-    if (!v->raw_json.isEmpty()) {
-        QJsonDocument doc(v->raw_json);
-        QByteArray json_bytes = doc.toJson(QJsonDocument::Indented);
-        FILE *f = fopen(json_path, "wb");
-        if (f) { fwrite(json_bytes.constData(), 1, json_bytes.size(), f); fclose(f); }
+    // Not in remote manifest — try loading from local file (e.g. loader profiles)
+    char local_path[MC_PATH_MAX];
+    snprintf(local_path, sizeof(local_path), "%s/versions/%s/%s.json", mc_dir, version_id, version_id);
+    if (mc_path_exists(local_path) && mc_version_parse_file(v, local_path)) {
+        mc_info("Loaded local version JSON: %s", local_path);
+        return 1;
     }
-    mc_info("Version JSON saved: %s/%s.json", ver_dir, v->id);
-    return 1;
+    mc_error("Failed to fetch version: %s", version_id);
+    return 0;
 }
 
 static int download_client_jar(McVersion *v, const char *mc_dir) {
-    if (!v->client_url[0]) { mc_error("No client download URL"); return 0; }
+    // If this version inherits from another, use the base version's client jar
+    char ver_id[64], client_url[2048], client_sha1[64];
+    long client_size = 0;
+    strncpy(ver_id, v->id, sizeof(ver_id) - 1);
+    strncpy(client_url, v->client_url, sizeof(client_url) - 1);
+    strncpy(client_sha1, v->client_sha1, sizeof(client_sha1) - 1);
+    client_size = v->client_size;
+    if (!client_url[0] && v->inherits_from[0]) {
+        char base_json_path[MC_PATH_MAX];
+        snprintf(base_json_path, sizeof(base_json_path), "%s/versions/%s/%s.json", mc_dir, v->inherits_from, v->inherits_from);
+        if (mc_path_exists(base_json_path)) {
+            McVersion *base = (McVersion *)malloc(sizeof(McVersion));
+            if (base) {
+                mc_version_init(base);
+                if (mc_version_parse_file(base, base_json_path)) {
+                    strncpy(ver_id, base->id, sizeof(ver_id) - 1);
+                    strncpy(client_url, base->client_url, sizeof(client_url) - 1);
+                    strncpy(client_sha1, base->client_sha1, sizeof(client_sha1) - 1);
+                    client_size = base->client_size;
+                }
+                mc_version_free(base);
+                free(base);
+            }
+        }
+    }
+    if (!client_url[0]) { mc_error("No client download URL"); return 0; }
+
     char versions_dir[MC_PATH_MAX];
     mc_path_join(mc_dir, "versions", versions_dir, sizeof(versions_dir));
     char ver_dir[MC_PATH_MAX];
-    mc_path_join(versions_dir, v->id, ver_dir, sizeof(ver_dir));
+    mc_path_join(versions_dir, ver_id, ver_dir, sizeof(ver_dir));
     mc_path_mkdir_p(ver_dir);
     char jar_path[MC_PATH_MAX];
-    snprintf(jar_path, sizeof(jar_path), "%s/%s.jar", ver_dir, v->id);
+    snprintf(jar_path, sizeof(jar_path), "%s/%s.jar", ver_dir, ver_id);
 
     char primary[2048], fallback[2048];
-    translate_url(v->client_url, primary, sizeof(primary));
+    translate_url(client_url, primary, sizeof(primary));
     fallback[0] = '\0';
     if (g_mirror && strcmp(g_mirror, "mojang") != 0)
-        strncpy(fallback, v->client_url, sizeof(fallback) - 1);
+        strncpy(fallback, client_url, sizeof(fallback) - 1);
 
-    if (download_file_with_progress(primary, jar_path,
-        v->client_sha1[0] ? v->client_sha1 : nullptr,
-        v->client_size, "client"))
-    {
+    if (mc_path_exists(jar_path)) {
+        mc_info("Client JAR exists: %s", jar_path);
+        return 1;
+    }
+
+    mc_info("Client JAR not found, downloading: %s", jar_path);
+    int r = mc_qt_download_file(primary, jar_path,
+        client_sha1[0] ? client_sha1 : nullptr,
+        client_size, g_timeout_ms);
+    if (r) {
         mc_info("Client JAR saved: %s", jar_path);
         return 1;
     }
-    if (fallback[0] && download_file_with_progress(fallback, jar_path,
-        v->client_sha1[0] ? v->client_sha1 : nullptr,
-        v->client_size, "client"))
-    {
-        mc_info("Client JAR saved (fallback): %s", jar_path);
-        return 1;
+    if (fallback[0]) {
+        mc_info("Retrying with fallback URL...");
+        r = mc_qt_download_file(fallback, jar_path,
+            client_sha1[0] ? client_sha1 : nullptr,
+            client_size, g_timeout_ms);
+        if (r) {
+            mc_info("Client JAR saved (fallback): %s", jar_path);
+            return 1;
+        }
     }
     mc_error("Failed to download client JAR");
     return 0;
@@ -280,7 +347,7 @@ static int download_libraries(McVersion *v, const char *mc_dir, DownloadPool &po
     char libraries_dir[MC_PATH_MAX];
     mc_path_join(mc_dir, "libraries", libraries_dir, sizeof(libraries_dir));
 
-    // Also process inherited version's libraries if present
+    // Process both the custom version's libraries and inherited version's libraries
     McVersion *base_v = v;
     McVersion *base_buf = nullptr;
     int has_base = 0;
@@ -305,8 +372,9 @@ static int download_libraries(McVersion *v, const char *mc_dir, DownloadPool &po
     }
 
     std::vector<WorkItem> works;
-    for (int i = 0; i < base_v->library_count; i++) {
-        McLibrary *lib = &base_v->libraries[i];
+    // First process custom version's libraries (loader-specific)
+    for (int i = 0; i < v->library_count; i++) {
+        McLibrary *lib = &v->libraries[i];
         if (!lib->is_required) continue;
 
         // For pure-native library entries (new-style, no separate classifier_url),
@@ -397,8 +465,92 @@ static int download_libraries(McVersion *v, const char *mc_dir, DownloadPool &po
         }
     }
 
+    // Also process inherited version's libraries if present
+    if (has_base) {
+        for (int i = 0; i < base_v->library_count; i++) {
+            McLibrary *lib = &base_v->libraries[i];
+            if (!lib->is_required) continue;
+
+            if (!lib->is_natives || lib->classifier_url[0]) {
+                char rel[MC_PATH_MAX];
+                mc_library_resolve_path(lib->name, rel, sizeof(rel));
+                if (!rel[0]) continue;
+                char local_path[MC_PATH_MAX];
+                mc_path_join(libraries_dir, rel, local_path, sizeof(local_path));
+                if (mc_path_exists(local_path)) {
+                    char actual[64];
+                    if (mc_hash_file_sha1(local_path, actual, sizeof(actual)) &&
+                        lib->sha1[0] && mc_stricmp(actual, lib->sha1) == 0)
+                        continue;
+                }
+                char lib_url[2048];
+                size_t url_len = strlen(lib->url);
+                if (url_len > 4 && memcmp(lib->url + url_len - 4, ".jar", 4) == 0) {
+                    strncpy(lib_url, lib->url, sizeof(lib_url) - 1);
+                    lib_url[sizeof(lib_url) - 1] = '\0';
+                } else {
+                    mc_library_resolve_url(lib->name, lib->url[0] ? lib->url : nullptr, lib_url, sizeof(lib_url));
+                    if (!lib_url[0]) continue;
+                }
+                char primary[2048], fallback[2048];
+                translate_url(lib_url, primary, sizeof(primary));
+                fallback[0] = '\0';
+                if (g_mirror && strcmp(g_mirror, "mojang") != 0)
+                    strncpy(fallback, lib_url, sizeof(fallback) - 1);
+                char parent[MC_PATH_MAX];
+                mc_path_dirname(local_path, parent, sizeof(parent));
+                mc_path_mkdir_p(parent);
+                WorkItem w;
+                w.url = primary;
+                w.fallback_url = fallback;
+                w.output_path = local_path;
+                w.expected_sha1 = lib->sha1;
+                w.expected_size = lib->size;
+                works.push_back(std::move(w));
+            }
+            if (lib->is_natives && (lib->natives_key[0] || !lib->classifier_url[0])) {
+                char rel[MC_PATH_MAX];
+                mc_library_natives_path(lib->name, lib->natives_key, rel, sizeof(rel));
+                if (!rel[0]) continue;
+                char local_path[MC_PATH_MAX];
+                mc_path_join(libraries_dir, rel, local_path, sizeof(local_path));
+                if (mc_path_exists(local_path)) { continue; }
+                char lib_url[2048];
+                const char *classifier_url = lib->classifier_url[0] ? lib->classifier_url : nullptr;
+                if (classifier_url) {
+                    strncpy(lib_url, classifier_url, sizeof(lib_url) - 1);
+                    lib_url[sizeof(lib_url) - 1] = '\0';
+                } else {
+                    size_t url_len = strlen(lib->url);
+                    if (url_len > 4 && memcmp(lib->url + url_len - 4, ".jar", 4) == 0) {
+                        strncpy(lib_url, lib->url, sizeof(lib_url) - 1);
+                        lib_url[sizeof(lib_url) - 1] = '\0';
+                    } else {
+                        mc_library_resolve_url(lib->name, lib->url[0] ? lib->url : nullptr, lib_url, sizeof(lib_url));
+                        if (!lib_url[0]) continue;
+                    }
+                }
+                char primary[2048], fallback[2048];
+                translate_url(lib_url, primary, sizeof(primary));
+                fallback[0] = '\0';
+                if (g_mirror && strcmp(g_mirror, "mojang") != 0)
+                    strncpy(fallback, lib_url, sizeof(fallback) - 1);
+                char parent[MC_PATH_MAX];
+                mc_path_dirname(local_path, parent, sizeof(parent));
+                mc_path_mkdir_p(parent);
+                WorkItem w;
+                w.url = primary;
+                w.fallback_url = fallback;
+                w.output_path = local_path;
+                w.expected_sha1 = lib->classifier_sha1[0] ? lib->classifier_sha1 : lib->sha1;
+                w.expected_size = lib->classifier_size ? lib->classifier_size : lib->size;
+                works.push_back(std::move(w));
+            }
+        }
+    }
+
     run_works(pool, works, mc_i18n("download_libraries"));
-    int ok = 0, fail = 0, skip = base_v->library_count * 2 - static_cast<int>(works.size());
+    int ok = 0, fail = 0, skip = static_cast<int>(works.size()) - 0;
     for (auto &w : works) { if (w.success) ok++; else fail++; }
     mc_info("Libraries: %d ok, %d skipped, %d failed", ok, skip, fail);
 
@@ -475,9 +627,27 @@ static int download_natives(McVersion *v, const char *mc_dir, DownloadPool &pool
 }
 
 static int download_assets(McVersion *v, const char *mc_dir, DownloadPool &pool) {
+    // Use inherited version's asset index if this version has none
+    McVersion *asset_v = v;
+    McVersion *asset_buf = nullptr;
+    if (!v->asset_index.id[0] && v->inherits_from[0]) {
+        char base_json_path[MC_PATH_MAX];
+        snprintf(base_json_path, sizeof(base_json_path), "%s/versions/%s/%s.json", mc_dir, v->inherits_from, v->inherits_from);
+        if (mc_path_exists(base_json_path)) {
+            asset_buf = (McVersion *)malloc(sizeof(McVersion));
+            if (asset_buf) {
+                mc_version_init(asset_buf);
+                if (mc_version_parse_file(asset_buf, base_json_path))
+                    asset_v = asset_buf;
+                else
+                    { free(asset_buf); asset_buf = nullptr; }
+            }
+        }
+    }
     McAssetIndex idx;
-    if (!mc_asset_index_fetch(&idx, v, mc_dir)) {
+    if (!mc_asset_index_fetch(&idx, asset_v, mc_dir)) {
         mc_error("Failed to fetch asset index");
+        if (asset_buf) { mc_version_free(asset_buf); free(asset_buf); }
         return 0;
     }
     mc_info("Asset index: %d objects", idx.count);
@@ -521,6 +691,7 @@ static int download_assets(McVersion *v, const char *mc_dir, DownloadPool &pool)
     for (auto &w : works) { if (w.success) ok++; else fail++; }
     mc_info("Assets: %d ok, %d skipped, %d failed", ok, skip, fail);
     mc_asset_index_free(&idx);
+    if (asset_buf) { mc_version_free(asset_buf); free(asset_buf); }
     return fail == 0;
 }
 
@@ -612,9 +783,9 @@ static int cmd_mc(const char *version_id, const char *output_dir, int threads) {
     if (!v) return 1;
     if (!download_version_json(v, version_id, output_dir)) { del_version(v); return 1; }
 
+    download_client_jar(v, output_dir);
     {
         DownloadPool pool(threads);
-        download_client_jar(v, output_dir);
         download_libraries(v, output_dir, pool);
     }
     {
@@ -639,6 +810,14 @@ int main(int argc, char **argv) {
 
     if (mc_mirror_load_config("mirrors.json"))
         mc_info("Loaded mirror config from mirrors.json");
+
+    mc_qt_dns_prefetch();
+
+    // Hard 600s timeout to prevent hanging
+    QTimer::singleShot(600000, [&app]() {
+        mc_error("Download timed out after 600s, exiting");
+        app.exit(1);
+    });
 
     const char *lang = nullptr;
     for (int i = 1; i < argc - 1; i++)
@@ -694,37 +873,56 @@ int main(int argc, char **argv) {
     }
     if (strcmp(cmd, "server") == 0 && argc >= 3) {
         McVersion *v = new_version(); if (!v) return 1;
-        if (!fetch_version(v, argv[2])) { del_version(v); return 1; }
+        if (!fetch_version_or_local(v, argv[2], output_dir)) { del_version(v); return 1; }
         int r = download_server_jar(v, output_dir) ? 0 : 1;
         del_version(v); return r;
     }
     if (strcmp(cmd, "libraries") == 0 && argc >= 3) {
         McVersion *v = new_version(); if (!v) return 1;
-        if (!fetch_version(v, argv[2])) { del_version(v); return 1; }
+        if (!fetch_version_or_local(v, argv[2], output_dir)) { del_version(v); return 1; }
         DownloadPool pool(thread_count);
         int r = download_libraries(v, output_dir, pool) ? 0 : 1;
         del_version(v); return r;
     }
     if (strcmp(cmd, "natives") == 0 && argc >= 3) {
         McVersion *v = new_version(); if (!v) return 1;
-        if (!fetch_version(v, argv[2])) { del_version(v); return 1; }
+        if (!fetch_version_or_local(v, argv[2], output_dir)) { del_version(v); return 1; }
         DownloadPool pool(thread_count);
         int r = download_natives(v, output_dir, pool) ? 0 : 1;
         del_version(v); return r;
     }
     if (strcmp(cmd, "assets") == 0 && argc >= 3) {
         McVersion *v = new_version(); if (!v) return 1;
-        if (!fetch_version(v, argv[2])) { del_version(v); return 1; }
+        if (!fetch_version_or_local(v, argv[2], output_dir)) { del_version(v); return 1; }
         DownloadPool pool(thread_count);
         int r = download_assets(v, output_dir, pool) ? 0 : 1;
         del_version(v); return r;
     }
     if (strcmp(cmd, "logging") == 0 && argc >= 3) {
         McVersion *v = new_version(); if (!v) return 1;
-        if (!fetch_version(v, argv[2])) { del_version(v); return 1; }
+        if (!fetch_version_or_local(v, argv[2], output_dir)) { del_version(v); return 1; }
         int r = download_logging(v, output_dir) ? 0 : 1;
         del_version(v); return r;
     }
+    if (strcmp(cmd, "mod") == 0 && argc >= 3) {
+        const char *url = argv[2];
+        for (int i = 3; i < argc; i++) {
+            if (strcmp(argv[i], "--dir") == 0 && i + 1 < argc) output_dir = argv[++i];
+            else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+                thread_count = atoi(argv[++i]);
+                if (thread_count > 128) thread_count = 128;
+            }
+        }
+        // Construct output path: <dir>/<filename-from-url>
+        char out_path[1024];
+        const char *fname = mc_path_filename(url);
+        snprintf(out_path, sizeof(out_path), "%s/%s", output_dir, fname);
+        if (download_file_with_progress(url, out_path, nullptr, 0, "Mod download")) {
+            mc_info("Downloaded mod: %s", out_path); return 0;
+        }
+        mc_error("Mod download failed"); return 1;
+    }
+
     if (strcmp(cmd, "url") == 0 && argc >= 3) {
         const char *url = argv[2];
         const char *out_path = nullptr;

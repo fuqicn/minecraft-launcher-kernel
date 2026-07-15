@@ -13,6 +13,7 @@
 #include <QtCore/QJsonObject>
 #include <QtCore/QJsonArray>
 #include "mc_auth.h"
+#include "mc_auth_msa.h"
 
 #define ARGBUF_SIZE 1048576
 #define MC_AUTH_TOKEN_SIZE 4096
@@ -22,6 +23,37 @@ static char g_mc_dir[MC_PATH_MAX] = ".";
 static int  g_memory_mb = 0;
 static char g_java_path[1024] = "";
 static char g_extra_jvm[2048] = "";
+static int  g_java_major_version = 0;
+
+// Detect Java major version by running `java -version`
+static int detect_java_major_version(const char *java_path) {
+    QProcess proc;
+    proc.setProgram(QString::fromUtf8(java_path));
+    proc.setArguments(QStringList() << "-version");
+    proc.start();
+    if (!proc.waitForFinished(5000)) return 0;
+    QByteArray output = proc.readAllStandardError();
+    // Parse "openjdk version \"XX.Y.Z\"" or "\"1.8.0_xxx\""
+    // Look for version after first digit
+    QList<QByteArray> lines = output.split('\n');
+    for (const QByteArray &line : lines) {
+        // Match: version "XX..."
+        int idx = line.indexOf("version \"");
+        if (idx < 0) continue;
+        idx += 9; // skip past 'version "'
+        int ver = 0;
+        // handle "1.X" format (Java 8 and earlier)
+        if (line[idx] == '1' && line[idx+1] == '.') {
+            idx += 2;
+        }
+        while (idx < line.size() && line[idx] >= '0' && line[idx] <= '9') {
+            ver = ver * 10 + (line[idx] - '0');
+            idx++;
+        }
+        if (ver > 0) return ver;
+    }
+    return 0;
+}
 
 static void print_help(void) {
     std::ostringstream oss;
@@ -106,8 +138,24 @@ static int build_classpath(char *buf, size_t buf_size, McVersion *v, const char 
         }
     }
 
-    // Add inherited version's JAR if different
-    if (v->inherits_from[0] && strcmp(v->inherits_from, jar_name) != 0) {
+    // Add inherited version's JAR if different.
+    // Skip for Forge 1.17+ (module path loaders) since their merged jars already
+    // contain Minecraft classes and putting the base jar on the module path causes
+    // split-package conflicts.
+    bool skip_inherited_jar = false;
+    if (!v->raw_json.isEmpty()) {
+        QJsonObject args_node = v->raw_json.value("arguments").toObject();
+        if (!args_node.isEmpty()) {
+            QJsonArray jvm = args_node.value("jvm").toArray();
+            for (int i = 0; i < jvm.size(); i++) {
+                if (jvm[i].isString() && jvm[i].toString() == QStringLiteral("-p")) {
+                    skip_inherited_jar = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (!skip_inherited_jar && v->inherits_from[0] && strcmp(v->inherits_from, jar_name) != 0) {
         char base_jar[MC_PATH_MAX];
         snprintf(base_jar, sizeof(base_jar), "%s%cversions%c%s%c%s.jar",
             abs_mc_dir, QDir::separator().toLatin1(), QDir::separator().toLatin1(),
@@ -130,7 +178,12 @@ static int build_classpath(char *buf, size_t buf_size, McVersion *v, const char 
     for (int i = 0; i < v->library_count; i++) {
         McLibrary *lib = &v->libraries[i];
         if (!lib->is_required) continue;
+
+        // For native entries with explicit classifier_url (old-style classifiers
+        // section in JSON), skip adding the classifier JAR directly. The base
+        // artifact path (line 174+) already handles these.
         if (lib->is_natives && lib->classifier_url[0]) continue;
+
         char rel_path[MC_PATH_MAX];
         mc_library_resolve_path(lib->name, rel_path, sizeof(rel_path));
         if (!rel_path[0]) continue;
@@ -138,26 +191,36 @@ static int build_classpath(char *buf, size_t buf_size, McVersion *v, const char 
         char full[MC_PATH_MAX];
         mc_path_join(libraries_dir, rel_path, full, sizeof(full));
 
-            // For known native entries, keep the native JAR on classpath (LWJGL 3 needs it)
-            if (!lib->is_natives) {
-                // Handle native classifiers: look for non-native JAR (strip natives classifier)
-            char alt_path[MC_PATH_MAX];
-            mc_path_dirname(full, alt_path, sizeof(alt_path));
-            const char *fname = mc_path_filename(full);
-            if (!fname) continue;
-            const char *native_marker = strstr(fname, "-natives-");
-            if (native_marker) {
-                std::string base(fname, native_marker - fname);
-                std::string ext = ".jar";
-                const char *dot = strrchr(fname, '.');
-                if (dot) ext = dot;
-                std::string alt_name = base + ext;
-                mc_path_join(alt_path, alt_name.c_str(), full, sizeof(full));
-                if (!mc_path_exists(full)) continue;
+        // If the classifier-named file doesn't exist, try the base name
+        // (some version JSONs omit the base artifact for classifiers like
+        // "natives-windows" or "unsafe" on the core lwjgl module).
+        if (!mc_path_exists(full)) {
+            // Check if name has a classifier (4 parts): try stripping it
+            char **parts = NULL;
+            int n = mc_strsplit(lib->name, ':', &parts);
+            if (n >= 4) {
+                char base_path[MC_PATH_MAX];
+                mc_path_dirname(full, base_path, sizeof(base_path));
+                const char *fname = mc_path_filename(full);
+                if (fname) {
+                    const char *last_dash = NULL;
+                    // Find the last '-' before ".jar"
+                    const char *ext_start = strstr(fname, ".jar");
+                    if (!ext_start) ext_start = fname + strlen(fname);
+                    for (const char *q = fname; q < ext_start; q++) {
+                        if (*q == '-') last_dash = q;
+                    }
+                    if (last_dash) {
+                        std::string base(fname, last_dash - fname);
+                        std::string ext(ext_start);
+                        std::string alt_name = base + ext;
+                        mc_path_join(base_path, alt_name.c_str(), full, sizeof(full));
+                    }
+                }
             }
-            }
-
-        if (!mc_path_exists(full)) continue;
+            mc_strsplit_free(parts, n);
+            if (!mc_path_exists(full)) continue;
+        }
 
         size_t len = strlen(full);
         if (pos + len + 2 <= buf_size) {
@@ -181,13 +244,37 @@ static int build_classpath(char *buf, size_t buf_size, McVersion *v, const char 
             for (int i = 0; i < base->library_count; i++) {
                 McLibrary *lib = &base->libraries[i];
                 if (!lib->is_required) continue;
-        if (lib->is_natives && lib->classifier_url[0]) continue;
+                if (lib->is_natives && lib->classifier_url[0]) continue;
                 char rel_path[MC_PATH_MAX];
                 mc_library_resolve_path(lib->name, rel_path, sizeof(rel_path));
                 if (!rel_path[0]) continue;
                 char full[MC_PATH_MAX];
                 mc_path_join(libraries_dir, rel_path, full, sizeof(full));
-                if (!mc_path_exists(full)) continue;
+                if (!mc_path_exists(full)) {
+                    char **parts = NULL;
+                    int n = mc_strsplit(lib->name, ':', &parts);
+                    if (n >= 4) {
+                        char base_path[MC_PATH_MAX];
+                        mc_path_dirname(full, base_path, sizeof(base_path));
+                        const char *fname = mc_path_filename(full);
+                        if (fname) {
+                            const char *ext_start = strstr(fname, ".jar");
+                            if (!ext_start) ext_start = fname + strlen(fname);
+                            const char *last_dash = NULL;
+                            for (const char *q = fname; q < ext_start; q++) {
+                                if (*q == '-') last_dash = q;
+                            }
+                            if (last_dash) {
+                                std::string base(fname, last_dash - fname);
+                                std::string ext(ext_start);
+                                std::string alt_name = base + ext;
+                                mc_path_join(base_path, alt_name.c_str(), full, sizeof(full));
+                            }
+                        }
+                    }
+                    mc_strsplit_free(parts, n);
+                    if (!mc_path_exists(full)) continue;
+                }
                 // Check not already in classpath
                 if (strstr(buf, full)) continue;
                 size_t len = strlen(full);
@@ -225,11 +312,41 @@ static void build_jvm_args(QStringList &args, McVersion *v,
     }
 
     // Classpath
-    // Always use -cp (classpath). Module path (-p) causes Java 9+ module system
-    // to try deriving module names from jar filenames, which breaks jars named
-    // like "1.20.1.jar". The version JSON's arguments.jvm already supplies -cp.
-    args << "-DlegacyClassPath.file=" + QString::fromUtf8(classpath);
-    args << "-cp" << QString::fromUtf8(classpath);
+    // Forge 1.17+ uses module path (-p) in arguments.jvm; detecting that
+    // lets us skip -cp to avoid Java module system split-package conflicts.
+    bool use_module_path = false;
+    if (!v->raw_json.isEmpty()) {
+        QJsonObject args_node = v->raw_json.value("arguments").toObject();
+        if (!args_node.isEmpty()) {
+            QJsonArray jvm = args_node.value("jvm").toArray();
+            for (int i = 0; i < jvm.size(); i++) {
+                if (jvm[i].isString() && jvm[i].toString() == QStringLiteral("-p")) {
+                    use_module_path = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    {
+        // Forge's BootstrapLauncher expects -DlegacyClassPath.file to point to a
+        // file whose lines contain the classpath entries (one per line).
+        QString cp_file = QString::fromUtf8(mc_dir) + QStringLiteral("/classpath.txt");
+        QFile cf(cp_file);
+        if (cf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QString cp = QString::fromUtf8(classpath);
+            cf.write(cp.replace(QLatin1Char(';'), QLatin1Char('\n')).toUtf8());
+            cf.close();
+            args << "-DlegacyClassPath.file=" + cp_file;
+        } else {
+            mc_warn("Failed to write classpath file, falling back to inline classpath");
+            args << "-DlegacyClassPath.file=" + QString::fromUtf8(classpath);
+        }
+    }
+
+    if (!use_module_path) {
+        args << "-cp" << QString::fromUtf8(classpath);
+    }
 
     // Log4j patch
     args << "-Dlog4j2.formatMsgNoLookups=true";
@@ -243,6 +360,17 @@ static void build_jvm_args(QStringList &args, McVersion *v,
                 for (int i = 0; i < jvm.size(); i++) {
                     if (jvm[i].isString()) {
                         std::string s(jvm[i].toString().toUtf8().constData());
+
+                        // Filter JVM flags that are incompatible with the current Java version
+                        if (g_java_major_version > 0 && g_java_major_version < 22) {
+                            if (s.find("--sun-misc-unsafe-memory-access=") != std::string::npos ||
+                                s.find("--enable-native-access=") != std::string::npos) {
+                                mc_info("Skipping JVM flag not supported by Java %d: %s",
+                                        g_java_major_version, s.c_str());
+                                continue;
+                            }
+                        }
+
                         size_t p;
                         while ((p = s.find("${natives_directory}")) != std::string::npos)
                             s.replace(p, 21, natives_dir);
@@ -252,6 +380,12 @@ static void build_jvm_args(QStringList &args, McVersion *v,
                             s.replace(p, 12, classpath);
                         while ((p = s.find("${classpath_separator}")) != std::string::npos)
                             s.replace(p, 22, ";");
+                        while ((p = s.find("${version_name}")) != std::string::npos)
+                            s.replace(p, 15, v->id);
+                        while ((p = s.find("${launcher_name}")) != std::string::npos)
+                            s.replace(p, 16, "opencode");
+                        while ((p = s.find("${launcher_version}")) != std::string::npos)
+                            s.replace(p, 19, "1.0");
                         args << QString::fromUtf8(s.c_str());
                     }
                 }
@@ -268,18 +402,67 @@ static void build_game_args(QStringList &args, McVersion *v,
     const char *access_token, const char *user_type,
     const char *version_type, const char *mc_dir)
 {
+    // Resolve asset_index from parent version if not set (e.g. Forge profiles)
+    if (!v->asset_index.id[0] && v->inherits_from[0]) {
+        char base_json[MC_PATH_MAX];
+        snprintf(base_json, sizeof(base_json), "%s%cversions%c%s%c%s.json",
+            mc_dir, QDir::separator().toLatin1(), QDir::separator().toLatin1(),
+            v->inherits_from, QDir::separator().toLatin1(), v->inherits_from);
+        QFile f(QString::fromUtf8(base_json));
+        if (f.open(QIODevice::ReadOnly)) {
+            QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+            if (!doc.isNull()) {
+                QJsonObject root = doc.object();
+                QJsonObject ai = root.value("assetIndex").toObject();
+                if (!ai.isEmpty()) {
+                    strncpy(v->asset_index.id, ai.value("id").toString().toUtf8().constData(), sizeof(v->asset_index.id) - 1);
+                    strncpy(v->asset_index.url, ai.value("url").toString().toUtf8().constData(), sizeof(v->asset_index.url) - 1);
+                    strncpy(v->asset_index.sha1, ai.value("sha1").toString().toUtf8().constData(), sizeof(v->asset_index.sha1) - 1);
+                    v->asset_index.size = (long)ai.value("size").toDouble(0);
+                    v->asset_index.total_size = (long)ai.value("totalSize").toDouble(0);
+                }
+            }
+        }
+    }
+
     // Build paths for asset root and game directory
     char assets_root[1024];
     mc_path_join(mc_dir, "assets", assets_root, sizeof(assets_root));
 
-    // Try extracting game arguments from raw_json (modern format)
-    int used_modern = 0;
+    // Check for modern format (arguments.game)
+    int has_modern_game_args = 0;
     if (!v->raw_json.isEmpty()) {
         QJsonObject args_node = v->raw_json.value("arguments").toObject();
         if (!args_node.isEmpty()) {
             QJsonArray game = args_node.value("game").toArray();
             if (!game.isEmpty()) {
-                used_modern = 1;
+                has_modern_game_args = 1;
+
+                // Check if arguments.game already contains standard args.
+                // Forge profiles omit them, vanilla includes them.
+                int has_standard_args = 0;
+                for (int i = 0; i < game.size() && !has_standard_args; i++) {
+                    if (game[i].isString()) {
+                        QString s = game[i].toString();
+                        if (s == "--username" || s == "--version" || s == "--accessToken")
+                            has_standard_args = 1;
+                    }
+                }
+
+                if (!has_standard_args) {
+                    // Forge-style: emit standard game args, then append profile-specific ones
+                    args << "--username" << username;
+                    args << "--version" << v->id;
+                    args << "--gameDir" << mc_dir;
+                    args << "--assetsDir" << assets_root;
+                    args << "--assetIndex" << v->asset_index.id;
+                    args << "--uuid" << uuid_str;
+                    args << "--accessToken" << access_token;
+                    args << "--userType" << user_type;
+                    args << "--versionType" << version_type;
+                }
+
+                // Append version-specific game args (e.g. Forge-specific ones)
                 for (int i = 0; i < game.size(); i++) {
                     if (game[i].isString()) {
                         std::string s(game[i].toString().toUtf8().constData());
@@ -308,10 +491,19 @@ static void build_game_args(QStringList &args, McVersion *v,
         }
     }
 
-    if (!used_modern && v->minecraft_arguments[0]) {
+    if (!has_modern_game_args && v->minecraft_arguments[0]) {
         // Legacy minecraft_arguments string
         std::string str(v->minecraft_arguments);
         size_t p;
+
+        // Legacy-specific variables (auth_session, game_assets)
+        if ((p = str.find("${auth_session}")) != std::string::npos) {
+            std::string session = std::string("token:") + access_token + ":" + uuid_str;
+            str.replace(p, 15, session);
+        }
+        if ((p = str.find("${game_assets}")) != std::string::npos) {
+            str.replace(p, 14, assets_root);
+        }
 
         while ((p = str.find("${auth_player_name}")) != std::string::npos)
             str.replace(p, 19, username);
@@ -393,6 +585,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     mc_info("%s: %s", mc_i18n("using_java"), g_java_path);
+    g_java_major_version = detect_java_major_version(g_java_path);
+    mc_info("Java major version: %d", g_java_major_version);
 
     // Normalize mc dir
     char abs_mc_dir[MC_PATH_MAX];
@@ -465,7 +659,12 @@ int main(int argc, char **argv) {
         mc_auth_init(&auth);
         if (mc_auth_load(&auth, session_path)) {
             mc_info("Loaded session for %s, refreshing...", auth.name);
-            if (mc_auth_refresh(&auth)) {
+            int refreshed = 0;
+            if (auth.client_token[0])
+                refreshed = mc_auth_refresh(&auth);
+            if (!refreshed && auth.msa_refresh_token[0])
+                refreshed = mc_auth_msa_refresh(&auth);
+            if (refreshed) {
                 mc_info("Session refreshed");
                 mc_auth_save(&auth, session_path);
                 strncpy(uuid_str, auth.uuid, sizeof(uuid_str) - 1);
@@ -476,7 +675,7 @@ int main(int argc, char **argv) {
                 mc_debug("uuid=[%s] access_token(length=%zu) user_type=[%s]", uuid_str, strlen(access_token), user_type);
                 is_online = 1;
             } else {
-                mc_warn("Session refresh failed: %s", auth.error[0] ? auth.error : "unknown error");
+                mc_warn("Session refresh failed");
             }
         } else {
             mc_warn("Failed to load session: %s", session_path);
