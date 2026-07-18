@@ -1,6 +1,7 @@
 #include <mcbase.h>
 #include <iostream>
 #include <sstream>
+#include <string>
 #include <cstring>
 #include <cstdlib>
 #include <QtCore/QCoreApplication>
@@ -22,7 +23,8 @@ static char g_player_name[64] = "Player";
 static char g_mc_dir[MC_PATH_MAX] = ".";
 static int  g_memory_mb = 0;
 static char g_java_path[1024] = "";
-static char g_extra_jvm[2048] = "";
+static char g_extra_jvm[8192] = "";
+static int  g_extra_jvm_truncated = 0;
 static int  g_java_major_version = 0;
 
 // Detect Java major version by running `java -version`
@@ -303,13 +305,23 @@ static void build_jvm_args(QStringList &args, McVersion *v,
         args << QString("-Xms%1m").arg(g_memory_mb / 2);
     }
 
-    // Extra JVM args
+    // Extra JVM args (supports quoted strings)
     if (g_extra_jvm[0]) {
-        QString extra = QString::fromUtf8(g_extra_jvm);
-        QStringList parts = extra.split(' ', Qt::SkipEmptyParts);
-        for (const QString &p : parts)
-            args << p.trimmed();
+        std::string extra(g_extra_jvm);
+        std::string cur;
+        bool in_quote = false;
+        for (char c : extra) {
+            if (c == '"') { in_quote = !in_quote; continue; }
+            if (c == ' ' && !in_quote) {
+                if (!cur.empty()) { args << QString::fromUtf8(cur.c_str()); cur.clear(); }
+                continue;
+            }
+            cur += c;
+        }
+        if (!cur.empty()) args << QString::fromUtf8(cur.c_str());
     }
+    if (g_extra_jvm_truncated)
+        mc_warn("Extra JVM args may be incomplete due to truncation");
 
     // Classpath
     // Forge 1.17+ uses module path (-p) in arguments.jvm; detecting that
@@ -577,7 +589,14 @@ int main(int argc, char **argv) {
     if (opt_user)     strncpy(g_player_name, opt_user, sizeof(g_player_name) - 1);
     if (opt_mem)      g_memory_mb = atoi(opt_mem);
     if (opt_java)     strncpy(g_java_path, opt_java, sizeof(g_java_path) - 1);
-    if (opt_jvm)      strncpy(g_extra_jvm, opt_jvm, sizeof(g_extra_jvm) - 1);
+    if (opt_jvm) {
+        size_t len = strlen(opt_jvm);
+        if (len >= sizeof(g_extra_jvm)) {
+            g_extra_jvm_truncated = 1;
+            mc_warn("--jvm value truncated (%zu bytes, max %zu)", len, sizeof(g_extra_jvm) - 1);
+        }
+        strncpy(g_extra_jvm, opt_jvm, sizeof(g_extra_jvm) - 1);
+    }
     if (opt_platform) mc_platform_set(opt_platform);
 
     // --java is required

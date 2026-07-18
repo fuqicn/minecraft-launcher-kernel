@@ -207,6 +207,30 @@ static int install_fabric(const char *mc_ver, const char *loader_ver, const char
 }
 
 // ---- Forge ----
+// Try to fetch Forge profile JSON from all known mirror paths.
+// Returns 1 on success, 0 if all mirrors failed.
+static int forge_fetch_profile_json(const char *mc_ver, const char *file_ver,
+                                     McVersion *v, char *out_url, size_t out_url_size) {
+    // Mirror list: primary + fallbacks
+    const char *mirror_bases[] = {
+        "https://bmclapi2.bangbang93.com/maven",
+        "https://maven.minecraftforge.net",
+        "https://files.minecraftforge.net/maven",
+        nullptr
+    };
+    for (int m = 0; mirror_bases[m]; m++) {
+        char profile_url[512];
+        snprintf(profile_url, sizeof(profile_url),
+                 "%s/net/minecraftforge/forge/%s-%s/forge-%s-%s-client.json",
+                 mirror_bases[m], mc_ver, file_ver, mc_ver, file_ver);
+        if (mc_version_fetch(v, profile_url)) {
+            if (out_url) strncpy(out_url, profile_url, out_url_size);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int install_forge(const char *mc_ver, const char *forge_ver, const char *mc_dir, const char *java_path) {
     mc_info("Installing Forge for MC %s...", mc_ver);
     char url[512];
@@ -224,28 +248,44 @@ static int install_forge(const char *mc_ver, const char *forge_ver, const char *
     QJsonArray versions = doc.array();
 
     const char *selected = nullptr;
-    QJsonObject selected_entry;
+    char selected_buf[128] = "";
     int n = versions.size();
     for (int i = 0; i < n; i++) {
         QJsonObject entry = versions[i].toObject();
         QString ver = entry.value("version").toString();
         if (!forge_ver || !*forge_ver) {
             if (!selected || strcmp(ver.toUtf8().constData(), selected) > 0) {
-                selected = ver.toUtf8().constData();
-                selected_entry = entry;
+                const char *v = ver.toUtf8().constData();
+                strncpy(selected_buf, v, sizeof(selected_buf) - 1);
+                selected = selected_buf;
             }
         } else if (strcmp(ver.toUtf8().constData(), forge_ver) == 0) {
-            QByteArray verBytes = ver.toUtf8();
-            char *sel = (char*)malloc((size_t)verBytes.size() + 1);
-            if (sel) { memcpy(sel, verBytes.constData(), (size_t)verBytes.size() + 1); selected = sel; }
-            selected_entry = entry;
+            strncpy(selected_buf, ver.toUtf8().constData(), sizeof(selected_buf) - 1);
+            selected = selected_buf;
             break;
         }
     }
     if (!selected) { mc_error("No Forge version found"); return 1; }
     mc_info("Selected Forge version: %s", selected);
-
     const char *file_ver = selected;
+
+    // Primary: download profile JSON directly
+    mc_info("Trying Forge profile JSON...");
+    McVersion *pv = new_version();
+    if (pv) {
+        char profile_url[512] = "";
+        if (forge_fetch_profile_json(mc_ver, file_ver, pv, profile_url, sizeof(profile_url))) {
+            make_loader_version_id("forge", file_ver, mc_ver, pv, pv->raw_json);
+            save_version_profile(pv, mc_dir);
+            del_version(pv);
+            mc_info("Forge profile saved: %s", profile_url);
+            return 0;
+        }
+        del_version(pv);
+    }
+
+    // Fallback: download and run installer JAR
+    mc_warn("Profile JSON not found, trying installer JAR...");
     char mc_safe[64], dl_url[512], output_path[MC_PATH_MAX];
     strncpy(mc_safe, mc_ver, sizeof(mc_safe) - 1);
     for (char *p = mc_safe; *p; p++) if (*p == '.') *p = '_';
@@ -255,7 +295,9 @@ static int install_forge(const char *mc_ver, const char *forge_ver, const char *
     if (!download_file(dl_url, output_path)) {
         snprintf(dl_url, sizeof(dl_url), "https://files.minecraftforge.net/maven/net/minecraftforge/forge/%s-%s/forge-%s-%s-installer.jar", mc_ver, file_ver, mc_ver, file_ver);
         if (!download_file(dl_url, output_path)) {
-            mc_error("Failed to download Forge JAR"); return 1;
+            mc_error("Failed to download Forge JAR");
+            mc_warn("Try installing Forge manually. See: https://files.minecraftforge.net");
+            return 1;
         }
     }
     mc_info("Forge installer downloaded: %s", output_path);
@@ -266,22 +308,8 @@ static int install_forge(const char *mc_ver, const char *forge_ver, const char *
         return 0;
     }
 
-    // Fallback: try to download profile JSON
-    mc_warn("Installer failed, trying profile JSON fallback...");
-    char profile_url[512];
-    snprintf(profile_url, sizeof(profile_url),
-             "https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/%s-%s/forge-%s-%s-client.json",
-             mc_ver, file_ver, mc_ver, file_ver);
-    McVersion *pv = new_version();
-    if (pv && mc_version_fetch(pv, profile_url)) {
-        make_loader_version_id("forge", file_ver, mc_ver, pv, pv->raw_json);
-        save_version_profile(pv, mc_dir);
-        del_version(pv);
-        mc_info("Forge profile saved from JSON fallback");
-        return 0;
-    }
-    del_version(pv);
-    mc_warn("Run the installer manually: java -jar \"%s\" --installClient \"%s\"", output_path, mc_dir);
+    mc_warn("Forge installer failed to run. Try manually:");
+    mc_warn("  java -jar \"%s\" --installClient \"%s\"", output_path, mc_dir);
     return 1;
 }
 
