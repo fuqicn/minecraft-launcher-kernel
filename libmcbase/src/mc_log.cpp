@@ -123,7 +123,33 @@ static void write_console(const char *str) {
 }
 
 void mc_console_write(const char *str) {
-    write_console(str);
+    if (g_output_mode == MC_OUTPUT_JSON) {
+        time_t now = time(NULL);
+        struct tm *tm = localtime(&now);
+        char timebuf[32];
+        strftime(timebuf, sizeof(timebuf), "%H:%M:%S", tm);
+        // Split multi-line strings into individual JSON lines
+        const char *p = str;
+        while (*p) {
+            const char *nl = strchr(p, '\n');
+            size_t len = nl ? (size_t)(nl - p) : strlen(p);
+            if (len > 0) {
+                char *seg = (char*)malloc(len + 1);
+                if (seg) {
+                    memcpy(seg, p, len); seg[len] = '\0';
+                    char *esc = json_escape(seg);
+                    if (esc) {
+                        std::cout << "{\"time\":\"" << timebuf << "\",\"level\":\"DATA\",\"msg\":\"" << esc << "\"}\n" << std::flush;
+                        free(esc);
+                    }
+                    free(seg);
+                }
+            }
+            if (nl) p = nl + 1; else break;
+        }
+    } else {
+        write_console(str);
+    }
 }
 
 void mc_console_init(void) {
@@ -139,7 +165,19 @@ void mc_console_printf(const char *fmt, ...) {
     char buf[4096];
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    std::cout << buf << std::flush;
+    if (g_output_mode == MC_OUTPUT_JSON) {
+        time_t now = time(NULL);
+        struct tm *tm = localtime(&now);
+        char timebuf[32];
+        strftime(timebuf, sizeof(timebuf), "%H:%M:%S", tm);
+        char *esc = json_escape(buf);
+        if (esc) {
+            std::cout << "{\"time\":\"" << timebuf << "\",\"level\":\"DATA\",\"msg\":\"" << esc << "\"}\n" << std::flush;
+            free(esc);
+        }
+    } else {
+        std::cout << buf << std::flush;
+    }
 }
 
 void mc_log(McLogLevel level, const char *fmt, ...) {
