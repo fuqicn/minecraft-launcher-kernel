@@ -160,5 +160,7 @@
     "mod_more_files": "更多文件未显示",
     "mod_mcver_filter": "按 MC 版本过滤",
     "mod_loader_filter": "按加载器过滤",
-    "mod_no_cf_key": "未设置 CURSEFORGE_API_KEY。请设置环境变量或使用 --apikey 参数。"
+    "mod_no_cf_key": "未设置 CURSEFORGE_API_KEY。请设置环境变量或使用 --apikey 参数。",
+    "json_opt": "以 JSON lines 格式输出日志",
+    "debug_opt": "启用详细调试输出"
 }

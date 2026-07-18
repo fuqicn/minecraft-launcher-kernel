@@ -12,6 +12,8 @@ static void print_help() {
     mc_console_printf("  --type <release|snapshot|old_beta|old_alpha|all>  %s\n", mc_i18n("filter_type"));
     mc_console_printf("  --mirror <mojang|bmclapi|mcbbs>  %s\n", mc_i18n("mirror_source"));
     mc_console_printf("  --lang <code>  %s\n", mc_i18n("lang_opt"));
+    mc_console_printf("  --json         %s\n", mc_i18n("json_opt"));
+    mc_console_printf("  --debug        %s\n", mc_i18n("debug_opt"));
     mc_console_printf("\n%s:\n", mc_i18n("examples"));
     mc_console_printf("  mcsearch\n");
     mc_console_printf("  mcsearch --type release\n");

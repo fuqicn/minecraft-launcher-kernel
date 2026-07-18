@@ -71,6 +71,8 @@ static void print_help(void) {
     oss << "  --session <file>    " << mc_i18n("session_opt") << std::endl;
     oss << "  --platform <os>     " << mc_i18n("platform_opt") << std::endl;
     oss << "  --lang <code>       " << mc_i18n("lang_opt") << std::endl;
+    oss << "  --json              " << mc_i18n("json_opt") << std::endl;
+    oss << "  --debug             " << mc_i18n("debug_opt") << std::endl;
     oss << "  --help              " << mc_i18n("help_opt") << std::endl;
     oss << std::endl;
     oss << mc_i18n("examples") << ":" << std::endl;

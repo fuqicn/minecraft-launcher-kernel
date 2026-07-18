@@ -175,6 +175,8 @@ static void print_help(void) {
     oss << "  --threads <n>    " << mc_i18n("threads") << std::endl;
     oss << "  --platform <os>  " << mc_i18n("platform_opt") << std::endl;
     oss << "  --lang <code>    " << mc_i18n("lang_opt") << std::endl;
+    oss << "  --json           " << mc_i18n("json_opt") << std::endl;
+    oss << "  --debug          " << mc_i18n("debug_opt") << std::endl;
     oss << std::endl;
     mc_console_write(oss.str().c_str());
 }

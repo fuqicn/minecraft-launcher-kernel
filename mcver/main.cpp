@@ -17,6 +17,8 @@ static void print_help(void) {
     mc_console_printf("\n%s:\n", mc_i18n("options"));
     mc_console_printf("  --mirror <type>   %s: mojang, bmclapi, mcbbs\n", mc_i18n("mirror"));
     mc_console_printf("  --lang <code>     %s\n", mc_i18n("lang_opt"));
+    mc_console_printf("  --json            %s\n", mc_i18n("json_opt"));
+    mc_console_printf("  --debug           %s\n", mc_i18n("debug_opt"));
     mc_console_printf("\n%s:\n", mc_i18n("examples"));
     mc_console_printf("  mcver list\n");
     mc_console_printf("  mcver list --type release\n");

@@ -160,5 +160,7 @@
     "mod_more_files": "more files not shown",
     "mod_mcver_filter": "Filter by MC version",
     "mod_loader_filter": "Filter by loader",
-    "mod_no_cf_key": "CURSEFORGE_API_KEY not set. Set environment variable or use --apikey."
+    "mod_no_cf_key": "CURSEFORGE_API_KEY not set. Set environment variable or use --apikey.",
+    "json_opt": "Output log in JSON lines format",
+    "debug_opt": "Enable verbose debug output"
 }
