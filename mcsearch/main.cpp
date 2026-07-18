@@ -2,28 +2,30 @@
 #include <mc_i18n.h>
 #include <mc_path.h>
 #include <mc_log.h>
-#include <iostream>
 #include <cstring>
 #include <cstdlib>
 
 static void print_help() {
-    std::cout << "mcsearch - " << mc_i18n("mcsearch_desc") << std::endl
-              << mc_i18n("usage") << ": mcsearch [" << mc_i18n("options") << "]" << std::endl
-              << std::endl
-              << mc_i18n("options") << ":" << std::endl
-              << "  --type <release|snapshot|old_beta|old_alpha|all>  " << mc_i18n("filter_type") << std::endl
-              << "  --mirror <mojang|bmclapi|mcbbs>  " << mc_i18n("mirror_source") << std::endl
-              << "  --lang <code>  " << mc_i18n("lang_opt") << std::endl
-              << std::endl
-              << mc_i18n("examples") << ":" << std::endl
-              << "  mcsearch" << std::endl
-              << "  mcsearch --type release" << std::endl
-              << "  mcsearch --type all --mirror bmclapi" << std::endl;
+    mc_console_printf("mcsearch - %s\n", mc_i18n("mcsearch_desc"));
+    mc_console_printf("%s: mcsearch [%s]\n\n", mc_i18n("usage"), mc_i18n("options"));
+    mc_console_printf("%s:\n", mc_i18n("options"));
+    mc_console_printf("  --type <release|snapshot|old_beta|old_alpha|all>  %s\n", mc_i18n("filter_type"));
+    mc_console_printf("  --mirror <mojang|bmclapi|mcbbs>  %s\n", mc_i18n("mirror_source"));
+    mc_console_printf("  --lang <code>  %s\n", mc_i18n("lang_opt"));
+    mc_console_printf("\n%s:\n", mc_i18n("examples"));
+    mc_console_printf("  mcsearch\n");
+    mc_console_printf("  mcsearch --type release\n");
+    mc_console_printf("  mcsearch --type all --mirror bmclapi\n");
 }
 
 int main(int argc, char **argv) {
     mc_console_init();
     mc_log_set_level(MC_LOG_ERROR);
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--json") == 0) { mc_output_set_mode(MC_OUTPUT_JSON); }
+        if (strcmp(argv[i], "--debug") == 0) { mc_log_set_level(MC_LOG_DEBUG); }
+    }
 
     const char *mirror = "mojang";
     const char *filter_type = "all";
@@ -45,7 +47,7 @@ int main(int argc, char **argv) {
     McManifest m;
     if (!mc_manifest_load_cache(&m)) {
         if (!mc_manifest_fetch_mirror(&m, 1, mirror)) {
-            std::cerr << mc_i18n("err_fetch_manifest") << std::endl;
+            mc_error("%s", mc_i18n("err_fetch_manifest"));
             return 1;
         }
         mc_manifest_save_cache(&m);
@@ -70,8 +72,8 @@ int main(int argc, char **argv) {
                 struct tm *tm = gmtime(&mt);
                 if (tm) strftime(modified_time, sizeof(modified_time), "%Y-%m-%dT%H:%M:%SZ", tm);
             }
-            std::cout << m.entries[i].type << "|" << m.entries[i].id << "|"
-                      << release_time << "|" << modified_time << std::endl;
+            mc_console_printf("%s|%s|%s|%s\n", m.entries[i].type, m.entries[i].id,
+                              release_time, modified_time);
         }
     }
 

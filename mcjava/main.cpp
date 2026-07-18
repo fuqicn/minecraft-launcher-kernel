@@ -20,6 +20,11 @@ int main(int argc, char **argv) {
     mc_console_init();
     mc_log_set_level(MC_LOG_WARN);
 
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--json") == 0) { mc_output_set_mode(MC_OUTPUT_JSON); }
+        if (strcmp(argv[i], "--debug") == 0) { mc_log_set_level(MC_LOG_DEBUG); }
+    }
+
     for (int i = 1; i < argc - 1; i++)
         if (strcmp(argv[i], "--lang") == 0) { mc_i18n_set(argv[i + 1]); break; }
 

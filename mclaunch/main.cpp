@@ -435,57 +435,57 @@ static void build_game_args(QStringList &args, McVersion *v,
         QJsonObject args_node = v->raw_json.value("arguments").toObject();
         if (!args_node.isEmpty()) {
             QJsonArray game = args_node.value("game").toArray();
-            if (!game.isEmpty()) {
-                has_modern_game_args = 1;
+            // Version uses modern format even if game array is empty (e.g. Fabric profile),
+            // so we set the flag to prevent falling through to legacy minecraftArguments.
+            has_modern_game_args = 1;
 
-                // Check if arguments.game already contains standard args.
-                // Forge profiles omit them, vanilla includes them.
-                int has_standard_args = 0;
-                for (int i = 0; i < game.size() && !has_standard_args; i++) {
-                    if (game[i].isString()) {
-                        QString s = game[i].toString();
-                        if (s == "--username" || s == "--version" || s == "--accessToken")
-                            has_standard_args = 1;
-                    }
+            // Check if arguments.game already contains standard args.
+            // Forge/Fabric profiles omit them, vanilla includes them.
+            int has_standard_args = 0;
+            for (int i = 0; i < game.size() && !has_standard_args; i++) {
+                if (game[i].isString()) {
+                    QString s = game[i].toString();
+                    if (s == "--username" || s == "--version" || s == "--accessToken")
+                        has_standard_args = 1;
                 }
+            }
 
-                if (!has_standard_args) {
-                    // Forge-style: emit standard game args, then append profile-specific ones
-                    args << "--username" << username;
-                    args << "--version" << v->id;
-                    args << "--gameDir" << mc_dir;
-                    args << "--assetsDir" << assets_root;
-                    args << "--assetIndex" << v->asset_index.id;
-                    args << "--uuid" << uuid_str;
-                    args << "--accessToken" << access_token;
-                    args << "--userType" << user_type;
-                    args << "--versionType" << version_type;
-                }
+            if (!has_standard_args) {
+                // Forge/Fabric-style: emit standard game args, then append profile-specific ones
+                args << "--username" << username;
+                args << "--version" << v->id;
+                args << "--gameDir" << mc_dir;
+                args << "--assetsDir" << assets_root;
+                args << "--assetIndex" << v->asset_index.id;
+                args << "--uuid" << uuid_str;
+                args << "--accessToken" << access_token;
+                args << "--userType" << user_type;
+                args << "--versionType" << version_type;
+            }
 
-                // Append version-specific game args (e.g. Forge-specific ones)
-                for (int i = 0; i < game.size(); i++) {
-                    if (game[i].isString()) {
-                        std::string s(game[i].toString().toUtf8().constData());
-                        size_t p;
-                        while ((p = s.find("${auth_player_name}")) != std::string::npos)
-                            s.replace(p, 19, username);
-                        while ((p = s.find("${auth_uuid}")) != std::string::npos)
-                            s.replace(p, 12, uuid_str);
-                        while ((p = s.find("${auth_access_token}")) != std::string::npos)
-                            s.replace(p, 20, access_token);
-                        while ((p = s.find("${user_type}")) != std::string::npos)
-                            s.replace(p, 12, user_type);
-                        while ((p = s.find("${version_name}")) != std::string::npos)
-                            s.replace(p, 15, v->id);
-                        while ((p = s.find("${assets_root}")) != std::string::npos)
-                            s.replace(p, 14, assets_root);
-                        while ((p = s.find("${game_directory}")) != std::string::npos)
-                            s.replace(p, 17, mc_dir);
-                        while ((p = s.find("${assets_index_name}")) != std::string::npos)
-                            s.replace(p, 20, v->asset_index.id);
-                        mc_debug("game arg: [%s] -> [%s]", game[i].toString().toUtf8().constData(), s.c_str());
-                        args << QString::fromUtf8(s.c_str());
-                    }
+            // Append version-specific game args (e.g. Forge/Fabric-specific ones)
+            for (int i = 0; i < game.size(); i++) {
+                if (game[i].isString()) {
+                    std::string s(game[i].toString().toUtf8().constData());
+                    size_t p;
+                    while ((p = s.find("${auth_player_name}")) != std::string::npos)
+                        s.replace(p, 19, username);
+                    while ((p = s.find("${auth_uuid}")) != std::string::npos)
+                        s.replace(p, 12, uuid_str);
+                    while ((p = s.find("${auth_access_token}")) != std::string::npos)
+                        s.replace(p, 20, access_token);
+                    while ((p = s.find("${user_type}")) != std::string::npos)
+                        s.replace(p, 12, user_type);
+                    while ((p = s.find("${version_name}")) != std::string::npos)
+                        s.replace(p, 15, v->id);
+                    while ((p = s.find("${assets_root}")) != std::string::npos)
+                        s.replace(p, 14, assets_root);
+                    while ((p = s.find("${game_directory}")) != std::string::npos)
+                        s.replace(p, 17, mc_dir);
+                    while ((p = s.find("${assets_index_name}")) != std::string::npos)
+                        s.replace(p, 20, v->asset_index.id);
+                    mc_debug("game arg: [%s] -> [%s]", game[i].toString().toUtf8().constData(), s.c_str());
+                    args << QString::fromUtf8(s.c_str());
                 }
             }
         }
@@ -546,7 +546,12 @@ static void build_game_args(QStringList &args, McVersion *v,
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     mc_console_init();
-    mc_log_set_level(MC_LOG_DEBUG);
+    mc_log_set_level(MC_LOG_INFO);
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--json") == 0) { mc_output_set_mode(MC_OUTPUT_JSON); }
+        if (strcmp(argv[i], "--debug") == 0) { mc_log_set_level(MC_LOG_DEBUG); }
+    }
 
     const char *lang = nullptr;
     if (find_opt_any("--lang", argc, argv, &lang) >= 0 && lang) mc_i18n_set(lang);

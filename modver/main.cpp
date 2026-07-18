@@ -1,27 +1,27 @@
 #include <mc_mod.h>
 #include <mc_i18n.h>
 #include <mc_log.h>
-#include <iostream>
 #include <cstring>
 #include <cstdlib>
-#include <iomanip>
+#include <cstdio>
+#include <string>
 
 static void print_help(void) {
-    std::cout << "modver - " << mc_i18n("modver_desc") << std::endl;
-    std::cout << mc_i18n("usage") << ": modver <project-id|slug|url> [" << mc_i18n("options") << "]\n" << std::endl;
-    std::cout << mc_i18n("options") << ":" << std::endl;
-    std::cout << "  --platform <curseforge|modrinth>  " << mc_i18n("mod_platform") << std::endl;
-    std::cout << "  --mcver <version>                 " << mc_i18n("mod_mcver_filter") << std::endl;
-    std::cout << "  --loader <loader>                 " << mc_i18n("mod_loader_filter") << std::endl;
-    std::cout << "  --mirror <type>                   " << mc_i18n("mirror") << std::endl;
-    std::cout << "  --lang <code>                     " << mc_i18n("lang_opt") << std::endl;
-    std::cout << "  --apikey <key>                    " << mc_i18n("mod_apikey") << std::endl;
-    std::cout << "\n" << mc_i18n("examples") << ":" << std::endl;
-    std::cout << "  modver sodium" << std::endl;
-    std::cout << "  modver sodium --mcver 1.20.1 --loader fabric" << std::endl;
-    std::cout << "  modver 394468 --platform curseforge" << std::endl;
-    std::cout << "  modver https://modrinth.com/mod/sodium" << std::endl;
-    std::cout << "  modver https://www.curseforge.com/minecraft/mc-mods/sodium" << std::endl;
+    mc_console_printf("modver - %s\n", mc_i18n("modver_desc"));
+    mc_console_printf("%s: modver <project-id|slug|url> [%s]\n\n", mc_i18n("usage"), mc_i18n("options"));
+    mc_console_printf("%s:\n", mc_i18n("options"));
+    mc_console_printf("  --platform <curseforge|modrinth>  %s\n", mc_i18n("mod_platform"));
+    mc_console_printf("  --mcver <version>                 %s\n", mc_i18n("mod_mcver_filter"));
+    mc_console_printf("  --loader <loader>                 %s\n", mc_i18n("mod_loader_filter"));
+    mc_console_printf("  --mirror <type>                   %s\n", mc_i18n("mirror"));
+    mc_console_printf("  --lang <code>                     %s\n", mc_i18n("lang_opt"));
+    mc_console_printf("  --apikey <key>                    %s\n", mc_i18n("mod_apikey"));
+    mc_console_printf("\n%s:\n", mc_i18n("examples"));
+    mc_console_printf("  modver sodium\n");
+    mc_console_printf("  modver sodium --mcver 1.20.1 --loader fabric\n");
+    mc_console_printf("  modver 394468 --platform curseforge\n");
+    mc_console_printf("  modver https://modrinth.com/mod/sodium\n");
+    mc_console_printf("  modver https://www.curseforge.com/minecraft/mc-mods/sodium\n");
 }
 
 // auto-detect source from URL or string
@@ -72,6 +72,11 @@ static const char *extract_id(const char *input, int source) {
 int main(int argc, char **argv) {
     mc_console_init();
     mc_log_set_level(MC_LOG_INFO);
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--json") == 0) { mc_output_set_mode(MC_OUTPUT_JSON); }
+        if (strcmp(argv[i], "--debug") == 0) { mc_log_set_level(MC_LOG_DEBUG); }
+    }
 
     if (argc < 2) { print_help(); return 0; }
     if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) { print_help(); return 0; }
@@ -132,33 +137,33 @@ int main(int argc, char **argv) {
     }
 
     if (!ok) {
-        std::cerr << mc_i18n("mod_not_found") << ": " << input << std::endl;
+        mc_error("%s: %s", mc_i18n("mod_not_found"), input);
         return 1;
     }
 
     // print project info
-    std::cout << mc_i18n("mod_name_label") << ": " << (proj.name ? proj.name : "?") << std::endl;
-    std::cout << mc_i18n("mod_id") << ": " << (proj.id ? proj.id : "?") << std::endl;
-    std::cout << mc_i18n("mod_slug") << ": " << (proj.slug ? proj.slug : "?") << std::endl;
-    std::cout << mc_i18n("mod_source") << ": " << (source == MC_MOD_CURSEFORGE ? "CurseForge" : "Modrinth") << std::endl;
-    std::cout << mc_i18n("mod_downloads") << ": " << proj.download_count << std::endl;
+    mc_console_printf("%s: %s\n", mc_i18n("mod_name_label"), proj.name ? proj.name : "?");
+    mc_console_printf("%s: %s\n", mc_i18n("mod_id"), proj.id ? proj.id : "?");
+    mc_console_printf("%s: %s\n", mc_i18n("mod_slug"), proj.slug ? proj.slug : "?");
+    mc_console_printf("%s: %s\n", mc_i18n("mod_source"), source == MC_MOD_CURSEFORGE ? "CurseForge" : "Modrinth");
+    mc_console_printf("%s: %ld\n", mc_i18n("mod_downloads"), proj.download_count);
     if (proj.game_versions)
-        std::cout << mc_i18n("mod_versions") << ": " << proj.game_versions << std::endl;
+        mc_console_printf("%s: %s\n", mc_i18n("mod_versions"), proj.game_versions);
     if (proj.loaders)
-        std::cout << mc_i18n("mod_loaders") << ": " << proj.loaders << std::endl;
+        mc_console_printf("%s: %s\n", mc_i18n("mod_loaders"), proj.loaders);
     if (proj.description)
-        std::cout << mc_i18n("mod_desc") << ": " << proj.description << std::endl;
+        mc_console_printf("%s: %s\n", mc_i18n("mod_desc"), proj.description);
     if (proj.website_url)
-        std::cout << mc_i18n("mod_website") << ": " << proj.website_url << std::endl;
+        mc_console_printf("%s: %s\n", mc_i18n("mod_website"), proj.website_url);
 
-    std::cout << "\n--- " << mc_i18n("mod_versions_list") << " ---" << std::endl;
+    mc_console_printf("\n--- %s ---\n", mc_i18n("mod_versions_list"));
 
     // fetch versions
     McModFile files[200];
     int fcount = mc_mod_get_versions(proj.id, source, mc_version, loader, files, 200);
 
     if (fcount == 0) {
-        std::cout << mc_i18n("mod_no_versions") << std::endl;
+        mc_console_printf("%s\n", mc_i18n("mod_no_versions"));
     } else {
         const char *h_version = mc_i18n("mod_ver_name");
         const char *h_type = mc_i18n("mod_ver_type");
@@ -168,52 +173,44 @@ int main(int argc, char **argv) {
         const char *h_size = mc_i18n("mod_ver_size");
 
         // filter headers
-        std::cout << std::left
-                  << std::setw(40) << h_version
-                  << std::setw(10) << h_type
-                  << std::setw(22) << h_date
-                  << std::setw(8) << h_size
-                  << "URL"
-                  << std::endl;
-        std::cout << std::setfill('-')
-                  << std::setw(40) << ""
-                  << std::setw(10) << ""
-                  << std::setw(22) << ""
-                  << std::setw(8) << ""
-                  << "------------------"
-                  << std::setfill(' ') << std::endl;
+        mc_console_printf("%-40s %-10s %-22s %-8s %s\n",
+                          h_version, h_type, h_date, h_size, "URL");
+        mc_console_printf("%-40s %-10s %-22s %-8s %s\n",
+                          "----", "----", "----", "----", "------------------");
 
         for (int i = 0; i < fcount && i < 40; i++) {
             McModFile *f = &files[i];
             std::string vname = f->display_name ? f->display_name : (f->file_name ? f->file_name : "?");
             if (vname.length() > 39) vname = vname.substr(0, 36) + "...";
 
-            std::cout << std::left
-                      << std::setw(40) << vname
-                      << std::setw(10) << (f->release_type ? f->release_type : "?")
-                      << std::setw(22) << (f->release_date ? f->release_date : "")
-                      << std::setw(8) << (f->size > 0 ? std::to_string(f->size / 1024) + "KB" : "")
-                      << (f->download_url ? f->download_url : "")
-                      << std::endl;
+            char size_str[32] = "";
+            if (f->size > 0) snprintf(size_str, sizeof(size_str), "%ldKB", f->size / 1024);
+
+            mc_console_printf("%-40s %-10s %-22s %-8s %s\n",
+                              vname.c_str(),
+                              f->release_type ? f->release_type : "?",
+                              f->release_date ? f->release_date : "",
+                              size_str,
+                              f->download_url ? f->download_url : "");
 
             // show MC versions and loaders on second line if available
             bool has_extra = (f->game_versions && f->game_versions[0]) ||
                              (f->loaders && f->loaders[0]);
             if (has_extra) {
-                std::cout << "  ";
+                mc_console_printf("  ");
                 if (f->game_versions && f->game_versions[0])
-                    std::cout << h_mcver << ": " << f->game_versions;
+                    mc_console_printf("%s: %s", h_mcver, f->game_versions);
                 if (f->loaders && f->loaders[0]) {
                     if (f->game_versions && f->game_versions[0])
-                        std::cout << " | ";
-                    std::cout << h_loader_label << ": " << f->loaders;
+                        mc_console_printf(" | ");
+                    mc_console_printf("%s: %s", h_loader_label, f->loaders);
                 }
-                std::cout << std::endl;
+                mc_console_printf("\n");
             }
         }
 
         if (fcount > 40)
-            std::cout << "\n(" << mc_i18n("mod_more_files") << ": " << (fcount - 40) << ")" << std::endl;
+            mc_console_printf("\n(%s: %d)\n", mc_i18n("mod_more_files"), (fcount - 40));
     }
 
     mc_mod_project_free(&proj);

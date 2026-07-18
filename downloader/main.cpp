@@ -129,7 +129,14 @@ public:
 
     void wait() {
         std::unique_lock<std::mutex> lock(m_mtx);
-        m_cv.wait(lock, [this] { return m_pending == 0; });
+        while (m_pending != 0) {
+            if (m_cv.wait_for(lock, std::chrono::milliseconds(50)) == std::cv_status::timeout) {
+                lock.unlock();
+                if (QCoreApplication::instance())
+                    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+                lock.lock();
+            }
+        }
     }
 };
 
@@ -190,34 +197,52 @@ static int download_file_with_progress(const char *url, const char *output_path,
 static void run_works(DownloadPool &pool, std::vector<WorkItem> &works, const char *label) {
     int total = static_cast<int>(works.size());
     mc_info("%s: %d %s", label, total, mc_i18n("files"));
-    std::atomic<int> done{0};
-    for (auto &w : works) {
-        pool.enqueue([&w, &done, total, label_str = std::string(label)]() {
-            const char *fname = strrchr(w.output_path.c_str(), '/');
-            if (!fname) fname = strrchr(w.output_path.c_str(), '\\');
-            if (fname) fname++; else fname = w.output_path.c_str();
-            mc_info("[%s] %s...", label_str.c_str(), fname);
+    if (total == 0) return;
 
-            if (w.fallback_url.empty()) {
-                w.success = mc_qt_download_file(w.url.c_str(), w.output_path.c_str(),
-                    w.expected_sha1.empty() ? nullptr : w.expected_sha1.c_str(),
-                    w.expected_size, g_timeout_ms);
-            } else {
-                const char *urls[2] = { w.url.c_str(), w.fallback_url.c_str() };
-                w.success = mc_qt_download_file_multi(urls, 2,
-                    w.output_path.c_str(),
-                    w.expected_sha1.empty() ? nullptr : w.expected_sha1.c_str(),
-                    w.expected_size, g_timeout_ms);
-            }
-
-            if (w.success)
-                mc_info("[%s] %s: OK", label_str.c_str(), fname);
-            else
-                mc_warn("[%s] %s: %s", label_str.c_str(), fname, mc_i18n("download_failed"));
-            ++done;
-        });
+    // Pre-translate URLs
+    std::vector<std::string> url_strs(total);
+    std::vector<const char*> urls(total);
+    std::vector<const char*> paths(total);
+    std::vector<const char*> sha1s(total);
+    std::vector<long> sizes(total);
+    std::vector<int> results(total);
+    for (int i = 0; i < total; i++) {
+        auto &w = works[i];
+        char buf[2048];
+        translate_url(w.url.c_str(), buf, sizeof(buf));
+        url_strs[i] = buf;
+        urls[i] = url_strs[i].c_str();
+        paths[i] = w.output_path.c_str();
+        sha1s[i] = w.expected_sha1.empty() ? nullptr : w.expected_sha1.c_str();
+        sizes[i] = w.expected_size;
     }
-    pool.wait();
+
+    // Batch-submit ALL files at once so process_all starts ALL concurrently
+    int ok = mc_qt_download_batch(urls.data(), paths.data(), sha1s.data(),
+                                   sizes.data(), total, g_timeout_ms, results.data());
+
+    // Retry failed files with fallback URL (if available)
+    for (int i = 0; i < total; i++) {
+        auto &w = works[i];
+        const char *fname = strrchr(w.output_path.c_str(), '/');
+        if (!fname) fname = strrchr(w.output_path.c_str(), '\\');
+        if (fname) fname++; else fname = w.output_path.c_str();
+
+        if (results[i]) {
+            w.success = 1;
+        } else if (!w.fallback_url.empty()) {
+            mc_info("[%s] %s: retrying fallback...", label, fname);
+            w.success = mc_qt_download_file(w.fallback_url.c_str(),
+                w.output_path.c_str(),
+                w.expected_sha1.empty() ? nullptr : w.expected_sha1.c_str(),
+                w.expected_size, g_timeout_ms);
+            if (!w.success)
+                mc_warn("[%s] %s: %s", label, fname, mc_i18n("download_failed"));
+        } else {
+            w.success = 0;
+            mc_warn("[%s] %s: %s", label, fname, mc_i18n("download_failed"));
+        }
+    }
 }
 
 static int download_version_json(McVersion *v, const char *version_id, const char *mc_dir) {
@@ -808,9 +833,15 @@ int main(int argc, char **argv) {
     mc_console_init();
     mc_log_set_level(MC_LOG_INFO);
 
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--json") == 0) { mc_output_set_mode(MC_OUTPUT_JSON); }
+        if (strcmp(argv[i], "--debug") == 0) { mc_log_set_level(MC_LOG_DEBUG); }
+    }
+
     if (mc_mirror_load_config("mirrors.json"))
         mc_info("Loaded mirror config from mirrors.json");
 
+    mc_qt_download_init();
     mc_qt_dns_prefetch();
 
     // Hard 600s timeout to prevent hanging
@@ -937,5 +968,6 @@ int main(int argc, char **argv) {
 
     mc_console_printf("%s: %s\n\n", mc_i18n("unknown_command"), cmd);
     print_help();
+    mc_qt_download_cleanup();
     return 1;
 }

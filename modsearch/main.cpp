@@ -1,26 +1,26 @@
 #include <mc_mod.h>
 #include <mc_i18n.h>
 #include <mc_log.h>
-#include <iostream>
 #include <cstring>
 #include <cstdlib>
-#include <iomanip>
+#include <cstdio>
+#include <string>
 
 static void print_help(void) {
-    std::cout << "modsearch - " << mc_i18n("modsearch_desc") << std::endl;
-    std::cout << mc_i18n("usage") << ": modsearch [query] [" << mc_i18n("options") << "]\n" << std::endl;
-    std::cout << mc_i18n("options") << ":" << std::endl;
-    std::cout << "  --platform <curseforge|modrinth|both>  " << mc_i18n("mod_platform") << " (default: both)" << std::endl;
-    std::cout << "  --sort <downloads|relevance|follows|newest>  " << mc_i18n("mod_sort") << std::endl;
-    std::cout << "  --limit <n>  " << mc_i18n("mod_limit") << " (default: 20)" << std::endl;
-    std::cout << "  --mirror <type>  " << mc_i18n("mirror") << std::endl;
-    std::cout << "  --lang <code>  " << mc_i18n("lang_opt") << std::endl;
-    std::cout << "  --apikey <key>  " << mc_i18n("mod_apikey") << std::endl;
-    std::cout << "\n" << mc_i18n("examples") << ":" << std::endl;
-    std::cout << "  modsearch" << std::endl;
-    std::cout << "  modsearch sodium" << std::endl;
-    std::cout << "  modsearch sodium --platform modrinth" << std::endl;
-    std::cout << "  modsearch --platform curseforge --sort downloads" << std::endl;
+    mc_console_printf("modsearch - %s\n", mc_i18n("modsearch_desc"));
+    mc_console_printf("%s: modsearch [query] [%s]\n\n", mc_i18n("usage"), mc_i18n("options"));
+    mc_console_printf("%s:\n", mc_i18n("options"));
+    mc_console_printf("  --platform <curseforge|modrinth|both>  %s (default: both)\n", mc_i18n("mod_platform"));
+    mc_console_printf("  --sort <downloads|relevance|follows|newest>  %s\n", mc_i18n("mod_sort"));
+    mc_console_printf("  --limit <n>  %s (default: 20)\n", mc_i18n("mod_limit"));
+    mc_console_printf("  --mirror <type>  %s\n", mc_i18n("mirror"));
+    mc_console_printf("  --lang <code>  %s\n", mc_i18n("lang_opt"));
+    mc_console_printf("  --apikey <key>  %s\n", mc_i18n("mod_apikey"));
+    mc_console_printf("\n%s:\n", mc_i18n("examples"));
+    mc_console_printf("  modsearch\n");
+    mc_console_printf("  modsearch sodium\n");
+    mc_console_printf("  modsearch sodium --platform modrinth\n");
+    mc_console_printf("  modsearch --platform curseforge --sort downloads\n");
 }
 
 static const char *source_name(int source) {
@@ -30,6 +30,11 @@ static const char *source_name(int source) {
 int main(int argc, char **argv) {
     mc_console_init();
     mc_log_set_level(MC_LOG_ERROR);
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--json") == 0) { mc_output_set_mode(MC_OUTPUT_JSON); }
+        if (strcmp(argv[i], "--debug") == 0) { mc_log_set_level(MC_LOG_DEBUG); }
+    }
 
     const char *query = nullptr;
     const char *mirror = nullptr;
@@ -86,7 +91,7 @@ int main(int argc, char **argv) {
     if (source == MC_MOD_CURSEFORGE || source == MC_MOD_ANY) {
         const char *key = getenv("CURSEFORGE_API_KEY");
         if ((!key || !key[0]) && (!apikey || !apikey[0]))
-            std::cerr << mc_i18n("warning") << ": " << mc_i18n("mod_no_cf_key") << std::endl;
+            mc_warn("%s: %s", mc_i18n("warning"), mc_i18n("mod_no_cf_key"));
     }
 
     McModProject results[200];
@@ -94,9 +99,9 @@ int main(int argc, char **argv) {
 
     if (count == 0) {
         if (query)
-            std::cout << mc_i18n("mod_none_query") << " '" << query << "'" << std::endl;
+            mc_console_printf("%s '%s'\n", mc_i18n("mod_none_query"), query);
         else
-            std::cout << mc_i18n("mod_none") << std::endl;
+            mc_console_printf("%s\n", mc_i18n("mod_none"));
         return 1;
     }
 
@@ -106,35 +111,24 @@ int main(int argc, char **argv) {
     const char *heading_dl = mc_i18n("mod_downloads");
     const char *heading_ver = mc_i18n("mod_versions");
 
-    std::cout << std::left
-              << std::setw(28) << heading_id
-              << std::setw(48) << heading_name
-              << std::setw(14) << heading_source
-              << std::setw(12) << heading_dl
-              << heading_ver
-              << std::endl;
-    std::cout << std::setfill('-')
-              << std::setw(28) << ""
-              << std::setw(48) << ""
-              << std::setw(14) << ""
-              << std::setw(12) << ""
-              << "----------------------"
-              << std::setfill(' ') << std::endl;
+    mc_console_printf("%-28s %-48s %-14s %-12s %s\n",
+                      heading_id, heading_name, heading_source, heading_dl, heading_ver);
+    mc_console_printf("%-28s %-48s %-14s %-12s %s\n",
+                      "----", "----", "----", "----", "----------------------");
 
     for (int i = 0; i < count; i++) {
         McModProject *p = &results[i];
-        std::cout << std::left
-                  << std::setw(28) << (p->id ? p->id : "")
-                  << std::setw(48) << (p->name ? p->name : "")
-                  << std::setw(14) << source_name(p->source)
-                  << std::setw(12) << p->download_count
-                  << (p->game_versions ? p->game_versions : "")
-                  << std::endl;
+        mc_console_printf("%-28s %-48s %-14s %-12ld %s\n",
+                          p->id ? p->id : "",
+                          p->name ? p->name : "",
+                          source_name(p->source),
+                          p->download_count,
+                          p->game_versions ? p->game_versions : "");
 
         if (p->description && p->description[0]) {
             std::string desc = p->description;
             if (desc.length() > 90) desc = desc.substr(0, 87) + "...";
-            std::cout << "  " << desc << std::endl;
+            mc_console_printf("  %s\n", desc.c_str());
         }
     }
 

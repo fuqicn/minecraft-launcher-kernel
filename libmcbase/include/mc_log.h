@@ -9,6 +9,11 @@ typedef enum {
     MC_LOG_NONE
 } McLogLevel;
 
+typedef enum {
+    MC_OUTPUT_HUMAN = 0,
+    MC_OUTPUT_JSON  = 1
+} McOutputMode;
+
 void mc_log_set_level(McLogLevel level);
 void mc_log_set_file(const char *path);
 void mc_log_set_progress(int active);
@@ -19,7 +24,11 @@ void mc_log(McLogLevel level, const char *fmt, ...);
 #define mc_warn(fmt, ...)   mc_log(MC_LOG_WARN,  fmt, ##__VA_ARGS__)
 #define mc_error(fmt, ...)  mc_log(MC_LOG_ERROR, fmt, ##__VA_ARGS__)
 
-// Write UTF-8 string to Windows console via WriteConsoleW (proper Unicode)
+// Output mode: HUMAN (default) or JSON
+void mc_output_set_mode(McOutputMode mode);
+McOutputMode mc_output_get_mode(void);
+
+// Write UTF-8 string to console via WriteConsoleW (proper Unicode)
 void mc_console_write(const char *str);
 void mc_console_printf(const char *fmt, ...);
 

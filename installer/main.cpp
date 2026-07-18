@@ -178,6 +178,28 @@ static int install_fabric(const char *mc_ver, const char *loader_ver, const char
     }
     make_loader_version_id("fabric-loader", loader_ver, mc_ver, v, v->raw_json);
     save_version_profile(v, mc_dir);
+
+    // Print missing library URLs for manual download
+    char lib_dir[MC_PATH_MAX];
+    mc_path_join(mc_dir, "libraries", lib_dir, sizeof(lib_dir));
+    for (int i = 0; i < v->library_count; i++) {
+        McLibrary *lib = &v->libraries[i];
+        if (!lib->is_required) continue;
+        if (lib->is_natives && lib->classifier_url[0]) continue;
+        char rel[MC_PATH_MAX], lib_url[2048], full[MC_PATH_MAX];
+        mc_library_resolve_path(lib->name, rel, sizeof(rel));
+        if (!rel[0]) continue;
+        mc_path_join(lib_dir, rel, full, sizeof(full));
+        if (mc_path_exists(full)) continue;
+        size_t ulen = strlen(lib->url);
+        if (ulen > 4 && memcmp(lib->url + ulen - 4, ".jar", 4) == 0)
+            strncpy(lib_url, lib->url, sizeof(lib_url) - 1);
+        else
+            mc_library_resolve_url(lib->name, lib->url[0] ? lib->url : nullptr, lib_url, sizeof(lib_url));
+        if (!lib_url[0]) continue;
+        mc_info("Missing library: %s -> %s", lib->name, lib_url);
+    }
+
     mc_http_response_free(resp);
     del_version(v);
     mc_info("Fabric installed: %s-%s-%s", mc_ver, loader_ver, mc_ver);
@@ -561,6 +583,11 @@ int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     mc_console_init();
     mc_log_set_level(MC_LOG_INFO);
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--json") == 0) { mc_output_set_mode(MC_OUTPUT_JSON); }
+        if (strcmp(argv[i], "--debug") == 0) { mc_log_set_level(MC_LOG_DEBUG); }
+    }
 
     if (mc_mirror_load_config("mirrors.json"))
         mc_info("Loaded mirror config from mirrors.json");
