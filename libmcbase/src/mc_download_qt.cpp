@@ -62,7 +62,7 @@ void mc_qt_dns_prefetch(void) {
             "piston-meta.mojang.com","piston-data.mojang.com","launcher.mojang.com",
             "launchermeta.mojang.com","resources.download.minecraft.net","libraries.minecraft.net",
             "maven.fabricmc.net","maven.minecraftforge.net","maven.neoforged.net",
-            "bmclapi2.bangbang93.com","api.modrinth.com","api.curseforge.com",NULL
+            "bmclapi2.bangbang93.com","api.modrinth.com",NULL
         };
         for (int i = 0; hosts[i]; i++) QHostInfo::fromName(QString::fromUtf8(hosts[i]));
     });

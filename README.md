@@ -16,7 +16,7 @@ A lightweight, modular Minecraft launcher kernel written in C++17 with Qt 6. Sup
 - **Game Argument Building** — Modern (`arguments.game`) and legacy (`minecraftArguments`) formats; correct handling of empty game arrays (Fabric/Forge)
 - **Authentication** — Microsoft MSA (device code flow) + offline mode, session save/refresh
 - **Mod Loader Installation** — Fabric, Forge (direct JSON profile), NeoForge, Quilt, OptiFine, LiteLoader
-- **Mod Searching** — CurseForge & Modrinth API integration
+- **Mod Searching** — Modrinth API integration
 - **Java Runtime Detection** — Scan and download Java runtimes
 - **JSON Output Mode** — `--json` flag for machine-readable logging
 - **Bilingual i18n** — Built-in translation system with 9 languages
@@ -65,7 +65,7 @@ mingw32-make -j4
 | `installer` | Install mod loaders (forge/fabric/...) | 安装模组加载器 |
 | `login` | Microsoft account authentication | Microsoft 账户认证 |
 | `mcjava` | Scan and list Java runtimes | 扫描 Java 运行时 |
-| `modsearch` | Search mods on CurseForge/Modrinth | 搜索模组 |
+| `modsearch` | Search mods on Modrinth | 搜索模组 |
 | `modver` | List mod versions and details | 查看模组版本详情 |
 
 See `--help` on each program for usage.
@@ -84,7 +84,7 @@ launcher-kernel/
 ├── mcver/              # Version listing and inspection
 ├── mcsearch/           # Version search
 ├── mcjava/             # Java runtime scanner
-├── modsearch/          # Mod search (CurseForge + Modrinth)
+├── modsearch/          # Mod search (Modrinth)
 ├── modver/             # Mod version listing
 ├── lang/               # i18n translation files (en, zh, ja, ko, fr, de, es, pt, ru)
 └── dist/               # Build output directory

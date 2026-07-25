@@ -10,23 +10,16 @@ static void print_help(void) {
     mc_console_printf("modsearch - %s\n", mc_i18n("modsearch_desc"));
     mc_console_printf("%s: modsearch [query] [%s]\n\n", mc_i18n("usage"), mc_i18n("options"));
     mc_console_printf("%s:\n", mc_i18n("options"));
-    mc_console_printf("  --platform <curseforge|modrinth|both>  %s (default: both)\n", mc_i18n("mod_platform"));
     mc_console_printf("  --sort <downloads|relevance|follows|newest>  %s\n", mc_i18n("mod_sort"));
     mc_console_printf("  --limit <n>  %s (default: 20)\n", mc_i18n("mod_limit"));
     mc_console_printf("  --mirror <type>  %s\n", mc_i18n("mirror"));
     mc_console_printf("  --lang <code>  %s\n", mc_i18n("lang_opt"));
-    mc_console_printf("  --apikey <key>  %s\n", mc_i18n("mod_apikey"));
     mc_console_printf("  --json          %s\n", mc_i18n("json_opt"));
     mc_console_printf("  --debug         %s\n", mc_i18n("debug_opt"));
     mc_console_printf("\n%s:\n", mc_i18n("examples"));
     mc_console_printf("  modsearch\n");
     mc_console_printf("  modsearch sodium\n");
-    mc_console_printf("  modsearch sodium --platform modrinth\n");
-    mc_console_printf("  modsearch --platform curseforge --sort downloads\n");
-}
-
-static const char *source_name(int source) {
-    return source == MC_MOD_CURSEFORGE ? "CurseForge" : "Modrinth";
+    mc_console_printf("  modsearch sodium --sort downloads\n");
 }
 
 int main(int argc, char **argv) {
@@ -40,8 +33,6 @@ int main(int argc, char **argv) {
 
     const char *query = nullptr;
     const char *mirror = nullptr;
-    const char *apikey = nullptr;
-    int source = MC_MOD_ANY;
     int sort = MC_MOD_SORT_DOWNLOADS;
     int limit = 20;
 
@@ -52,12 +43,6 @@ int main(int argc, char **argv) {
             mc_i18n_set(argv[++i]);
         } else if (strcmp(argv[i], "--mirror") == 0 && i + 1 < argc) {
             mirror = argv[++i];
-        } else if (strcmp(argv[i], "--apikey") == 0 && i + 1 < argc) {
-            apikey = argv[++i];
-        } else if (strcmp(argv[i], "--platform") == 0 && i + 1 < argc) {
-            const char *val = argv[++i];
-            if (strcmp(val, "curseforge") == 0) source = MC_MOD_CURSEFORGE;
-            else if (strcmp(val, "modrinth") == 0) source = MC_MOD_MODRINTH;
         } else if (strcmp(argv[i], "--sort") == 0 && i + 1 < argc) {
             const char *val = argv[++i];
             if (strcmp(val, "relevance") == 0) sort = MC_MOD_SORT_RELEVANCE;
@@ -82,22 +67,9 @@ int main(int argc, char **argv) {
     }
 
     if (mirror) mc_mod_set_mirror(mirror);
-    if (apikey) mc_mod_set_api_key(apikey);
-
-    // read api key from env if not set
-    const char *env_key = getenv("CURSEFORGE_API_KEY");
-    if (env_key && env_key[0] && !apikey)
-        mc_mod_set_api_key(env_key);
-
-    // warn about missing CurseForge API key when CF platform is selected
-    if (source == MC_MOD_CURSEFORGE || source == MC_MOD_ANY) {
-        const char *key = getenv("CURSEFORGE_API_KEY");
-        if ((!key || !key[0]) && (!apikey || !apikey[0]))
-            mc_warn("%s: %s", mc_i18n("warning"), mc_i18n("mod_no_cf_key"));
-    }
 
     McModProject results[200];
-    int count = mc_mod_search(query, source, limit, sort, results, 200);
+    int count = mc_mod_search(query, MC_MOD_MODRINTH, limit, sort, results, 200);
 
     if (count == 0) {
         if (query)
@@ -109,21 +81,19 @@ int main(int argc, char **argv) {
 
     const char *heading_id = mc_i18n("mod_id");
     const char *heading_name = mc_i18n("mod_name");
-    const char *heading_source = mc_i18n("mod_source");
     const char *heading_dl = mc_i18n("mod_downloads");
     const char *heading_ver = mc_i18n("mod_versions");
 
-    mc_console_printf("%-28s %-48s %-14s %-12s %s\n",
-                      heading_id, heading_name, heading_source, heading_dl, heading_ver);
-    mc_console_printf("%-28s %-48s %-14s %-12s %s\n",
-                      "----", "----", "----", "----", "----------------------");
+    mc_console_printf("%-28s %-48s %-12s %s\n",
+                      heading_id, heading_name, heading_dl, heading_ver);
+    mc_console_printf("%-28s %-48s %-12s %s\n",
+                      "----", "----", "----", "----------------------");
 
     for (int i = 0; i < count; i++) {
         McModProject *p = &results[i];
-        mc_console_printf("%-28s %-48s %-14s %-12ld %s\n",
+        mc_console_printf("%-28s %-48s %-12ld %s\n",
                           p->id ? p->id : "",
                           p->name ? p->name : "",
-                          source_name(p->source),
                           p->download_count,
                           p->game_versions ? p->game_versions : "");
 
