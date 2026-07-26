@@ -19,6 +19,13 @@ typedef struct {
 } McModProject;
 
 typedef struct {
+    char *project_id;
+    char *version_id;
+    char *file_name;
+    char *dependency_type;
+} McModDependency;
+
+typedef struct {
     char *id;
     char *project_id;
     char *display_name;
@@ -31,6 +38,8 @@ typedef struct {
     char *release_type;
     char *release_date;
     int download_count;
+    McModDependency *dependencies;
+    int dependency_count;
 } McModFile;
 
 enum McModSource {

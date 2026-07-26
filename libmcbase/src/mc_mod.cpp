@@ -73,6 +73,13 @@ void mc_mod_file_free(McModFile *f) {
     free(f->file_name); free(f->download_url); free(f->sha1);
     free(f->game_versions); free(f->loaders); free(f->release_type);
     free(f->release_date);
+    for (int i = 0; i < f->dependency_count; i++) {
+        free(f->dependencies[i].project_id);
+        free(f->dependencies[i].version_id);
+        free(f->dependencies[i].file_name);
+        free(f->dependencies[i].dependency_type);
+    }
+    free(f->dependencies);
     memset(f, 0, sizeof(*f));
 }
 
@@ -275,6 +282,22 @@ int mc_mod_get_versions(const char *project_id, int source,
         QStringList loadersArr = safe_string_array(obj, "loaders");
         if (!loadersArr.isEmpty())
             f->loaders = strdup_qstring(loadersArr.join(", "));
+
+        QJsonArray deps = obj.value("dependencies").toArray();
+        if (!deps.isEmpty()) {
+            f->dependency_count = deps.size();
+            f->dependencies = (McModDependency *)malloc((size_t)deps.size() * sizeof(McModDependency));
+            if (f->dependencies) {
+                memset(f->dependencies, 0, (size_t)deps.size() * sizeof(McModDependency));
+                for (int j = 0; j < deps.size(); j++) {
+                    QJsonObject d = deps[j].toObject();
+                    f->dependencies[j].project_id = strdup_qstring(safe_string(d, "project_id"));
+                    f->dependencies[j].version_id = strdup_qstring(safe_string(d, "version_id"));
+                    f->dependencies[j].file_name = strdup_qstring(safe_string(d, "file_name"));
+                    f->dependencies[j].dependency_type = strdup_qstring(safe_string(d, "dependency_type"));
+                }
+            }
+        }
 
         count++;
     }

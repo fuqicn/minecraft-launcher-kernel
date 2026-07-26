@@ -128,7 +128,6 @@ int main(int argc, char **argv) {
                               size_str,
                               f->download_url ? f->download_url : "");
 
-            // show MC versions and loaders on second line if available
             bool has_extra = (f->game_versions && f->game_versions[0]) ||
                              (f->loaders && f->loaders[0]);
             if (has_extra) {
@@ -139,6 +138,17 @@ int main(int argc, char **argv) {
                     if (f->game_versions && f->game_versions[0])
                         mc_console_printf(" | ");
                     mc_console_printf("%s: %s", h_loader_label, f->loaders);
+                }
+                mc_console_printf("\n");
+            }
+
+            if (f->dependency_count > 0) {
+                mc_console_printf("  Dependencies:");
+                for (int j = 0; j < f->dependency_count; j++) {
+                    McModDependency *d = &f->dependencies[j];
+                    const char *type = d->dependency_type ? d->dependency_type : "unknown";
+                    const char *pid = d->project_id ? d->project_id : "?";
+                    mc_console_printf(" %s[%s]", pid, type);
                 }
                 mc_console_printf("\n");
             }
