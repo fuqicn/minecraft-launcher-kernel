@@ -1,3 +1,10 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 fuqicn
+ *
+ * SPDX-License-Identifier: MIT
+ */
 extern "C" {
 #include "mc_http.h"
 }

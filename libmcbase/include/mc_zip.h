@@ -1,3 +1,10 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 fuqicn
+ *
+ * SPDX-License-Identifier: MIT
+ */
 #ifndef MC_ZIP_H
 #define MC_ZIP_H
 

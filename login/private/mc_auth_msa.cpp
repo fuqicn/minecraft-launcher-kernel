@@ -1,3 +1,10 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 fuqicn
+ *
+ * SPDX-License-Identifier: MIT
+ */
 #include "mc_auth_msa.h"
 #include <QJsonDocument>
 #include <QJsonObject>

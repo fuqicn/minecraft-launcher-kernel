@@ -1,3 +1,10 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 fuqicn
+ *
+ * SPDX-License-Identifier: MIT
+ */
 #ifndef MC_I18N_H
 #define MC_I18N_H
 

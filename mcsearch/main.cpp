@@ -1,3 +1,10 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 fuqicn
+ *
+ * SPDX-License-Identifier: MIT
+ */
 #include <mc_manifest.h>
 #include <mc_i18n.h>
 #include <mc_path.h>

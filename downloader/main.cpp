@@ -1,3 +1,10 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 fuqicn
+ *
+ * SPDX-License-Identifier: MIT
+ */
 #include <mcbase.h>
 #include "private/include/mc_asset.h"
 #include "private/include/mc_java_dl.h"

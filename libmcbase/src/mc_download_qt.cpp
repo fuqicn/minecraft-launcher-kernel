@@ -1,3 +1,10 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 fuqicn
+ *
+ * SPDX-License-Identifier: MIT
+ */
 #include "mc_download_qt.h"
 #include "mc_hash.h"
 #include "mc_path.h"
