@@ -43,6 +43,21 @@ int mc_download_url(const char *url, const char *output_path, McDownloadResult *
 // URL mirror translation helpers
 int mc_download_translate_mojang_url(const char *url, char *mirror, size_t mirror_size, const char *mirror_type);
 
+// Global download source selection ("mojang", "auto", "bmclapi", "mcimirror", "mcbbs", ...).
+// Passing "" or NULL restores "auto".
+void mc_download_set_mirror(const char *mirror_type);
+
+// Currently configured mirror type (default "auto").
+const char *mc_download_mirror(void);
+
+// Resolved mirror type: if configured type is "auto", probes all mirrors once
+// (cached for a few minutes) and returns the best available one. Never returns
+// NULL; falls back to "mojang".
+const char *mc_download_effective_mirror(void);
+
+// Translate using the effective mirror (resolves "auto" at call time).
+int mc_download_translate_mojang_url_auto(const char *url, char *mirror, size_t mirror_size);
+
 // Mirror config (loaded from JSON, replaces hardcoded rules)
 #define MC_MIRROR_MAX_RULES 16
 #define MC_MIRROR_MAX_ENTRIES 8

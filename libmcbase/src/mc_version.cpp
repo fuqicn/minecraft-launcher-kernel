@@ -7,6 +7,7 @@
  */
 #include "mc_version.h"
 #include "mc_http.h"
+#include "mc_library.h"
 #include "mc_str.h"
 #include "mc_manifest.h"
 #include "mc_download.h"
@@ -56,52 +57,54 @@ static void parse_library(McVersion *v, const QJsonObject &lib_json) {
 
         QJsonObject classifiers = downloads.value("classifiers").toObject();
         if (!classifiers.isEmpty()) {
-            QJsonObject natives_win = classifiers.value("natives-windows").toObject();
-            if (!natives_win.isEmpty()) {
+            // Pick the native-classifier for THIS platform (natives-windows /
+            // natives-linux / natives-osx), preferring the arch-suffixed key.
+            char prefix[32];
+            snprintf(prefix, sizeof(prefix), "natives-%s", mc_platform_get());
+            const char *arch = mc_platform_arch_get();
+            const char *suffix = (strcmp(arch, "x86") == 0) ? "-32" : "-64";
+            char keyExplicit[64];
+            snprintf(keyExplicit, sizeof(keyExplicit), "%s%s", prefix, suffix);
+
+            auto tryClass = [lib, &classifiers](const QString &key) -> bool {
+                QJsonObject o = classifiers.value(key).toObject();
+                if (o.isEmpty()) return false;
                 lib->is_natives = 1;
-                strcpy(lib->natives_key, "natives-windows");
-                strncpy(lib->classifier_url, natives_win.value("url").toString().toUtf8().constData(), sizeof(lib->classifier_url) - 1);
-                strncpy(lib->classifier_sha1, natives_win.value("sha1").toString().toUtf8().constData(), sizeof(lib->classifier_sha1) - 1);
-                lib->classifier_size = (long)natives_win.value("size").toDouble(0);
-            } else {
-                QJsonObject n64 = classifiers.value("natives-windows-64").toObject();
-                if (!n64.isEmpty()) {
-                    lib->is_natives = 1;
-                    strcpy(lib->natives_key, "natives-windows-64");
-                    strncpy(lib->classifier_url, n64.value("url").toString().toUtf8().constData(), sizeof(lib->classifier_url) - 1);
-                    strncpy(lib->classifier_sha1, n64.value("sha1").toString().toUtf8().constData(), sizeof(lib->classifier_sha1) - 1);
-                    lib->classifier_size = (long)n64.value("size").toDouble(0);
-                }
-                if (!lib->is_natives) {
-                    QJsonObject n32 = classifiers.value("natives-windows-32").toObject();
-                    if (!n32.isEmpty()) {
-                        lib->is_natives = 1;
-                        strcpy(lib->natives_key, "natives-windows-32");
-                        strncpy(lib->classifier_url, n32.value("url").toString().toUtf8().constData(), sizeof(lib->classifier_url) - 1);
-                        strncpy(lib->classifier_sha1, n32.value("sha1").toString().toUtf8().constData(), sizeof(lib->classifier_sha1) - 1);
-                        lib->classifier_size = (long)n32.value("size").toDouble(0);
-                    }
-                }
-            }
+                strncpy(lib->natives_key, key.toUtf8().constData(), sizeof(lib->natives_key) - 1);
+                strncpy(lib->classifier_url, o.value("url").toString().toUtf8().constData(), sizeof(lib->classifier_url) - 1);
+                strncpy(lib->classifier_sha1, o.value("sha1").toString().toUtf8().constData(), sizeof(lib->classifier_sha1) - 1);
+                lib->classifier_size = (long)o.value("size").toDouble(0);
+                return true;
+            };
+
+            if (!tryClass(QString::fromUtf8(keyExplicit)))
+                tryClass(QString::fromUtf8(prefix));
         }
     } else {
         lib->is_required = 1;
         QString url = lib_json.value("url").toString();
+        // Construct full URL: base URL + library path (e.g., maven.fabricmc.net/net/.../fabric-loader-0.19.3.jar)
+        char libPath[512];
+        mc_library_resolve_path(name.toUtf8().constData(), libPath, sizeof(libPath));
         QByteArray urlBytes = url.toUtf8();
         const char *urlStr = urlBytes.constData();
-        if (urlStr && *urlStr) {
+        if (urlStr && *urlStr && libPath[0]) {
             size_t len = strlen(urlStr);
             while (len > 0 && urlStr[len - 1] == '/') len--;
-            if (len < sizeof(lib->url) - 1) {
+            size_t plen = strlen(libPath);
+            if (len + 1 + plen < sizeof(lib->url)) {
                 memcpy(lib->url, urlStr, len);
-                lib->url[len] = '\0';
+                lib->url[len] = '/';
+                memcpy(lib->url + len + 1, libPath, plen);
+                lib->url[len + 1 + plen] = '\0';
             }
         }
     }
 
     QJsonObject natives = lib_json.value("natives").toObject();
     if (!natives.isEmpty() && !lib->is_natives) {
-        QString nw = natives.value("windows").toString();
+        QString platform = QString::fromUtf8(mc_platform_get());
+        QString nw = natives.value(platform).toString();
         if (!nw.isEmpty()) {
             lib->is_natives = 1;
             strncpy(lib->natives_key, nw.toUtf8().constData(), sizeof(lib->natives_key) - 1);

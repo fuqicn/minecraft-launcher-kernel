@@ -19,20 +19,24 @@ extern "C" {
 #include <QtCore/QUrl>
 #include <QtCore/QByteArray>
 #include <QtNetwork/QNetworkProxy>
+#include "mc_download_qt.h"
 
 static char g_qt_argv0[256] = "opencode-launcher";
 static char *g_qt_argv[] = { g_qt_argv0, nullptr };
 static int g_qt_argc = 1;
-static QNetworkAccessManager *g_nam = nullptr;
+
+static QNetworkAccessManager *get_nam(void) {
+    thread_local QNetworkAccessManager *nam = nullptr;
+    if (!nam) nam = new QNetworkAccessManager();
+    return nam;
+}
 
 static void ensure_qt(void) {
     if (!QCoreApplication::instance()) {
         static QCoreApplication *app = new QCoreApplication(g_qt_argc, g_qt_argv);
         (void)app;
     }
-    if (!g_nam) {
-        g_nam = new QNetworkAccessManager();
-    }
+    get_nam();
 }
 
 extern "C" void mc_http_init(McHttpClient *client) {
@@ -76,9 +80,9 @@ static McHttpResponse *do_request(McHttpClient *client, const char *url,
     if (client->use_proxy) {
         QNetworkProxy proxy(QNetworkProxy::HttpProxy,
             QString::fromUtf8(client->proxy_host), client->proxy_port);
-        g_nam->setProxy(proxy);
+        get_nam()->setProxy(proxy);
     } else {
-        g_nam->setProxy(QNetworkProxy::NoProxy);
+        get_nam()->setProxy(QNetworkProxy::NoProxy);
     }
 
     for (int i = 0; i < header_count && extra_headers && extra_headers[i]; i++) {
@@ -93,16 +97,16 @@ static McHttpResponse *do_request(McHttpClient *client, const char *url,
 
     QNetworkReply *reply = nullptr;
     if (strcmp(method, "GET") == 0) {
-        reply = g_nam->get(req);
+        reply = get_nam()->get(req);
     } else if (strcmp(method, "HEAD") == 0) {
-        reply = g_nam->head(req);
+        reply = get_nam()->head(req);
     } else if (strcmp(method, "POST") == 0) {
         QByteArray postBody;
         if (body && body_len > 0)
             postBody = QByteArray((const char *)body, body_len);
         if (content_type)
             req.setHeader(QNetworkRequest::ContentTypeHeader, QString::fromUtf8(content_type));
-        reply = g_nam->post(req, postBody);
+        reply = get_nam()->post(req, postBody);
     } else {
         snprintf(resp->error, sizeof(resp->error), "Unsupported method: %s", method);
         return resp;
@@ -110,11 +114,25 @@ static McHttpResponse *do_request(McHttpClient *client, const char *url,
 
     QEventLoop loop;
     QTimer timer;
+    QTimer cancel_timer;
+    cancel_timer.setInterval(100);
+    QObject::connect(&cancel_timer, &QTimer::timeout, [&loop]() {
+        if (mc_qt_download_cancel()) loop.quit();
+    });
+    cancel_timer.start();
     timer.setSingleShot(true);
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
     timer.start(client->timeout_ms);
     loop.exec();
+
+    if (mc_qt_download_cancel()) {
+        reply->abort();
+        snprintf(resp->error, sizeof(resp->error), "Request cancelled");
+        delete reply;
+        return resp;
+    }
+    cancel_timer.stop();
 
     if (!timer.isActive()) {
         reply->abort();

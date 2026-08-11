@@ -76,7 +76,8 @@ int main(int argc, char **argv) {
     if (mirror) mc_mod_set_mirror(mirror);
 
     McModProject results[200];
-    int count = mc_mod_search(query, MC_MOD_MODRINTH, limit, sort, results, 200);
+    int count = mc_mod_search(query, nullptr, nullptr,
+                              MC_MOD_MODRINTH, limit, sort, results, 200);
 
     if (count == 0) {
         if (query)

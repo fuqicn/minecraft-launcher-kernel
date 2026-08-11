@@ -22,6 +22,7 @@ typedef struct {
     char *game_versions;
     char *loaders;
     int source;
+    char *project_type;
     char *website_url;
 } McModProject;
 
@@ -69,9 +70,17 @@ void mc_mod_file_free(McModFile *f);
 
 void mc_mod_set_mirror(const char *mirror);
 
-int mc_mod_search(const char *query, int source,
-                  int limit, int sort,
+// Warm the Modrinth mirror decision in the background (non-blocking for callers).
+void mc_mod_warmup_mirror(void);
+
+int mc_mod_search(const char *query, const char *mc_version, const char *loader,
+                  int source, int limit, int sort,
                   McModProject *results, int max_results);
+
+// Search Modrinth for modpacks (project_type=modpack). Same result struct.
+int mc_mod_search_pack(const char *query, const char *mc_version, const char *loader,
+                       int limit, int sort,
+                       McModProject *results, int max_results);
 
 int mc_mod_get_project(const char *project_id, int source,
                        McModProject *project);
@@ -79,5 +88,12 @@ int mc_mod_get_project(const char *project_id, int source,
 int mc_mod_get_versions(const char *project_id, int source,
                         const char *mc_version, const char *loader,
                         McModFile *files, int max_files);
+
+// Batch project lookup (Modrinth GET /projects?ids=[...]).
+int mc_mod_get_projects(const char **ids, int count,
+                        McModProject *results, int max_results);
+
+// Translate a Modrinth file/API URL to the configured mirror, if any.
+int mc_mod_translate_download_url(const char *url, char *out, size_t out_size);
 
 #endif

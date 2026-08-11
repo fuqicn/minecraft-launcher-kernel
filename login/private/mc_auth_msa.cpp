@@ -19,6 +19,8 @@
 #include <QtCore/QUrl>
 #include <QtCore/QProcess>
 #include <QtCore/QElapsedTimer>
+#include <QtGui/QGuiApplication>
+#include <QtGui/QClipboard>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -60,7 +62,9 @@ static void copy_to_clipboard(const char *text) {
         GlobalFree(h);
     }
 #else
-    (void)text;
+    // Cross-platform via the Qt clipboard (null-safe when no QGuiApplication).
+    QClipboard *cb = QGuiApplication::clipboard();
+    if (cb) cb->setText(QString::fromUtf8(text));
 #endif
 }
 

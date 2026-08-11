@@ -7,7 +7,9 @@
       { "match": "resources.download.minecraft.net", "prefix": "/assets" },
       { "match": "maven.fabricmc.net", "prefix": "/maven" },
       { "match": "maven.minecraftforge.net", "prefix": "/maven" },
-      { "match": "maven.neoforged.net", "prefix": "/maven" }
+      { "match": "maven.neoforged.net", "prefix": "/maven" },
+      { "match": "meta.fabricmc.net", "prefix": "/fabric-meta" },
+      { "match": "meta.quiltmc.org", "prefix": "/quilt-meta" }
     ]
   },
   {
@@ -18,7 +20,9 @@
       { "match": "maven.fabricmc.net", "prefix": "/maven" },
       { "match": "maven.minecraftforge.net", "prefix": "/maven" },
       { "match": "maven.neoforged.net", "prefix": "/maven" },
-      { "match": "resources.download.minecraft.net", "prefix": "/assets" }
+      { "match": "resources.download.minecraft.net", "prefix": "/assets" },
+      { "match": "meta.fabricmc.net", "prefix": "/fabric-meta" },
+      { "match": "meta.quiltmc.org", "prefix": "/quilt-meta" }
     ]
   }
 ]

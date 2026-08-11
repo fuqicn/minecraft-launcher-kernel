@@ -8,11 +8,10 @@
 #include "mc_i18n.h"
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocale>
 #include "mc_path.h"
 #include <cstring>
 #include <cstdio>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 
 static char g_lang[16] = "";
 static QJsonObject g_table;
@@ -21,9 +20,10 @@ static int g_loaded = 0;
 static const char *detect_system_lang(void) {
     static char buf[16] = {0};
     if (buf[0]) return buf;
-    WCHAR wbuf[16] = {0};
-    GetLocaleInfoW(LOCALE_NAME_USER_DEFAULT, LOCALE_SISO639LANGNAME, wbuf, 8);
-    WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, buf, (int)sizeof(buf), NULL, NULL);
+    // Cross-platform language detection (Windows locale / macOS / Linux).
+    QString lang = QLocale::system().bcp47Name().section('-', 0, 0).toLower();
+    if (lang.isEmpty()) lang = QStringLiteral("en");
+    qstrncpy(buf, lang.toUtf8().constData(), sizeof(buf));
     if (!buf[0]) strcpy(buf, "en");
     return buf;
 }

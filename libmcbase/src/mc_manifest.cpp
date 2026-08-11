@@ -7,6 +7,7 @@
  */
 #include "mc_manifest.h"
 #include "mc_http.h"
+#include "mc_download.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -130,7 +131,16 @@ int mc_manifest_fetch_mirror(McManifest *m, int force_refresh, const char *mirro
         return 1;
     }
 
-    const char *primary_url = mc_manifest_url_for_mirror(mirror_type);
+    const char *resolved = mirror_type;
+    char resolved_buf[64];
+    if (!mirror_type || !mirror_type[0] || strcmp(mirror_type, "auto") == 0) {
+        const char *eff = mc_download_effective_mirror();
+        strncpy(resolved_buf, eff, sizeof(resolved_buf) - 1);
+        resolved_buf[sizeof(resolved_buf) - 1] = '\0';
+        resolved = resolved_buf;
+    }
+
+    const char *primary_url = mc_manifest_url_for_mirror(resolved);
     const char *mirrors[] = {
         MOJANG_MANIFEST_URL,
         BMCLAPI_MANIFEST_URL,

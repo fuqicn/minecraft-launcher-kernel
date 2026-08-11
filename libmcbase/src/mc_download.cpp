@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <sstream>
 #include <chrono>
+#include <mutex>
 
 #include <QtCore/QFile>
 #include <QJsonDocument>
@@ -24,6 +25,66 @@
 #include <QJsonValue>
 
 #define MIRROR_TEST_URL "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+
+// Global download-source state ("auto" = probe best mirror at call time).
+static std::mutex g_download_mirror_mutex;
+static char g_download_mirror_type[64] = "auto";
+static char g_download_mirror_effective[64] = "";
+static std::chrono::steady_clock::time_point g_download_mirror_effective_at;
+static thread_local char t_download_effective[64] = "";
+
+void mc_download_set_mirror(const char *mirror_type) {
+    std::lock_guard<std::mutex> lk(g_download_mirror_mutex);
+    if (!mirror_type || !mirror_type[0]) {
+        strncpy(g_download_mirror_type, "auto", sizeof(g_download_mirror_type) - 1);
+    } else {
+        strncpy(g_download_mirror_type, mirror_type, sizeof(g_download_mirror_type) - 1);
+    }
+    g_download_mirror_type[sizeof(g_download_mirror_type) - 1] = '\0';
+    g_download_mirror_effective[0] = '\0';
+    mc_info("Download source set to: %s", g_download_mirror_type);
+}
+
+const char *mc_download_mirror(void) {
+    std::lock_guard<std::mutex> lk(g_download_mirror_mutex);
+    return g_download_mirror_type;
+}
+
+const char *mc_download_effective_mirror(void) {
+    char resolved[64];
+    {
+        std::lock_guard<std::mutex> lk(g_download_mirror_mutex);
+        if (g_download_mirror_type[0] && strcmp(g_download_mirror_type, "auto") != 0) {
+            strncpy(t_download_effective, g_download_mirror_type, sizeof(t_download_effective) - 1);
+            return t_download_effective;
+        }
+        auto now = std::chrono::steady_clock::now();
+        if (g_download_mirror_effective[0] &&
+            now - g_download_mirror_effective_at < std::chrono::minutes(10)) {
+            strncpy(t_download_effective, g_download_mirror_effective, sizeof(t_download_effective) - 1);
+            return t_download_effective;
+        }
+        strncpy(resolved, "mojang", sizeof(resolved) - 1);
+    }
+
+    McMirrorProbe results[MC_MAX_MIRROR_TYPES];
+    int count = mc_mirror_probe_all(results, MC_MAX_MIRROR_TYPES);
+    const char *best = mc_mirror_select_best(results, count);
+    if (!best) best = "mojang";
+    strncpy(resolved, best, sizeof(resolved) - 1);
+
+    {
+        std::lock_guard<std::mutex> lk(g_download_mirror_mutex);
+        strncpy(g_download_mirror_effective, resolved, sizeof(g_download_mirror_effective) - 1);
+        g_download_mirror_effective_at = std::chrono::steady_clock::now();
+        strncpy(t_download_effective, resolved, sizeof(t_download_effective) - 1);
+    }
+    return t_download_effective;
+}
+
+int mc_download_translate_mojang_url_auto(const char *url, char *mirror, size_t mirror_size) {
+    return mc_download_translate_mojang_url(url, mirror, mirror_size, mc_download_effective_mirror());
+}
 
 // Loaded mirror configs (replaces hardcoded logic when populated)
 static McMirrorEntry g_mirror_configs[MC_MIRROR_MAX_ENTRIES];
@@ -417,7 +478,7 @@ int mc_mirror_probe(const char *mirror_type, McMirrorProbe *result) {
 
 int mc_mirror_probe_all(McMirrorProbe *results, int max_results) {
     if (!results) return 0;
-    const char *known_types[] = { "mojang", "bmclapi", "mcbbs", NULL };
+    const char *known_types[] = { "mojang", "bmclapi", "mcimirror", "mcbbs", NULL };
     int count = 0;
     for (int i = 0; known_types[i] && count < max_results; i++)
         if (mc_mirror_probe(known_types[i], &results[count]))

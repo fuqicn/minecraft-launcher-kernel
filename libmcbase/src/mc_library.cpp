@@ -7,6 +7,7 @@
  */
 #include "mc_library.h"
 #include "mc_str.h"
+#include "mc_version.h"
 #include <cstring>
 #include <sstream>
 
@@ -56,8 +57,12 @@ int mc_library_resolve_path(const char *name, char *out, size_t out_size) {
 int mc_library_resolve_url(const char *name, const char *mirror_base, char *out, size_t out_size) {
     char path[512];
     maven_to_path(name, path, sizeof(path), 0, NULL);
-    if (!mirror_base || !*mirror_base)
-        mirror_base = "https://libraries.minecraft.net";
+    if (!mirror_base || !*mirror_base) {
+        if (name && strncmp(name, "net.minecraftforge:", 19) == 0)
+            mirror_base = "https://maven.minecraftforge.net";
+        else
+            mirror_base = "https://libraries.minecraft.net";
+    }
     std::ostringstream oss;
     oss << mirror_base << '/' << path;
     std::string result = oss.str();
@@ -78,10 +83,14 @@ int mc_library_natives_path(const char *name, const char *natives_key, char *out
         }
         mc_strsplit_free(parts, n);
     }
-    std::string key = natives_key ? natives_key : "natives-windows";
+    char platBuf[32];
+    snprintf(platBuf, sizeof(platBuf), "natives-%s", mc_platform_get());
+    std::string key = natives_key ? natives_key : platBuf;
     std::string::size_type pos = key.find("${arch}");
     if (pos != std::string::npos) {
-        key.replace(pos, 7, "64");
+        const char *arch = mc_platform_arch_get();
+        const char *archLiteral = (strcmp(arch, "x86") == 0) ? "32" : "64";
+        key.replace(pos, 7, archLiteral);
     }
     maven_to_path(name, out, out_size, 1, key.c_str());
     return out[0] != '\0';
