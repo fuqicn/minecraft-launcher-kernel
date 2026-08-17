@@ -27,7 +27,7 @@ set(LIBMCBASE_SRC
 
 add_library(libmcbase STATIC ${LIBMCBASE_SRC})
 target_include_directories(libmcbase PUBLIC libmcbase/include)
-target_link_libraries(libmcbase PUBLIC Qt6::Core Qt6::Network)
+target_link_libraries(libmcbase PUBLIC Qt6::Core Qt6::Network z)
 
 # ===== Programs =====
 function(add_mc_program NAME)
