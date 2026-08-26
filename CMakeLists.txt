@@ -39,6 +39,7 @@ add_mc_program(mcver)
 add_mc_program(mcsearch)
 add_mc_program(modsearch)
 add_mc_program(modver)
+add_mc_program(packsearch)
 add_mc_program(installer)
 
 add_mc_program(mcjava
@@ -65,7 +66,7 @@ add_mc_program(mclaunch
 target_include_directories(mclaunch PRIVATE login/private/include)
 
 # ===== Post-build: copy artifacts to dist/ =====
-set(MC_PROGRAMS mcver mcsearch modsearch modver mcjava login downloader installer mclaunch)
+set(MC_PROGRAMS mcver mcsearch modsearch modver packsearch mcjava login downloader installer mclaunch)
 
 foreach(PROG ${MC_PROGRAMS})
     add_custom_command(TARGET ${PROG} POST_BUILD
