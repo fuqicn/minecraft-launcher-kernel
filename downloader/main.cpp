@@ -850,6 +850,23 @@ int main(int argc, char **argv) {
     if (mc_mirror_load_config("mirrors.json"))
         mc_info("Loaded mirror config from mirrors.json");
 
+    // RAII guard: ensure download pool is shut down and the Qt event loop is
+    // explicitly quit on ANY exit path. Qt's event loop must be stopped BEFORE
+    // pool_shutdown(), otherwise the detached worker threads get stuck in
+    // QNAM/TLS cleanup that requires the event loop, causing the process to
+    // hang for up to 10+ seconds after downloads complete.
+    struct DownloaderGuard {
+        QCoreApplication *app_ptr;
+        explicit DownloaderGuard(QCoreApplication *a) : app_ptr(a) {}
+        ~DownloaderGuard() {
+            if (app_ptr) {
+                app_ptr->quit();
+                app_ptr->processEvents(QEventLoop::AllEvents, 50);
+            }
+            mc_qt_download_cleanup();
+        }
+    } g_guard(&app);
+
     mc_qt_dns_prefetch();  // non-blocking DNS, safe to call anytime
 
     const char *lang = nullptr;

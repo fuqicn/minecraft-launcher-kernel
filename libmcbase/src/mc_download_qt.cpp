@@ -172,10 +172,10 @@ static void pool_shutdown() {
         doomed.swap(g_pool_threads);
     }
     g_pool_cv.notify_all();
-    // Wait up to 1s total for workers to exit after cancel was set.
+    // Wait up to 500ms for workers to exit after cancel was set.
     // Workers should break out quickly once cancel is visible.
     // If stuck, detach and let the OS reclaim them on process exit.
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
     for (auto &t : doomed) {
         if (!t.joinable()) continue;
         while (t.joinable()) {
