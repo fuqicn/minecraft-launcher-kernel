@@ -215,6 +215,7 @@ static void run_works(DownloadPool &pool, std::vector<WorkItem> &works, const ch
     std::vector<const char*> sha1s(total);
     std::vector<long> sizes(total);
     std::vector<int> results(total);
+    long long grand_total = 0;
     for (int i = 0; i < total; i++) {
         auto &w = works[i];
         char buf[2048];
@@ -224,11 +225,31 @@ static void run_works(DownloadPool &pool, std::vector<WorkItem> &works, const ch
         paths[i] = w.output_path.c_str();
         sha1s[i] = w.expected_sha1.empty() ? nullptr : w.expected_sha1.c_str();
         sizes[i] = w.expected_size;
+        if (w.expected_size > 0) grand_total += w.expected_size;
     }
 
-    // Batch-submit ALL files at once so process_all starts ALL concurrently
+    // Per-file progress tracking: report each completed file immediately.
+    struct BatchProgress {
+        long long grand_total;
+        std::atomic<long long> bytes_done{0};
+        std::atomic<int> files_done{0};
+    };
+    auto bp = std::make_shared<BatchProgress>();
+    bp->grand_total = grand_total;
+
+    McQtDownloadProgressFn on_file_done = [](const char *path, long long received,
+                                              long long total, void *userdata) {
+        auto *bp = (BatchProgress*)userdata;
+        bp->bytes_done.fetch_add(received, std::memory_order_relaxed);
+        bp->files_done.fetch_add(1, std::memory_order_relaxed);
+        (void)total; (void)path;
+    };
+
+    // Batch-submit ALL files at once so process_all starts ALL concurrently.
+    // Pass a progress callback so each completed file emits an update.
     int ok = mc_qt_download_batch(urls.data(), paths.data(), sha1s.data(),
-                                   sizes.data(), total, g_timeout_ms, results.data());
+                                   sizes.data(), total, g_timeout_ms, results.data(),
+                                   on_file_done, bp.get());
 
     // Retry failed files with fallback URL (if available)
     for (int i = 0; i < total; i++) {

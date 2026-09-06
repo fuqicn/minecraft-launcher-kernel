@@ -55,10 +55,13 @@ void mc_qt_dns_prefetch(void);
 // Batch submit: enqueue all files at once, wait for all.
 // URLs/paths/sizes must have 'count' elements. sha1s may be NULL.
 // results (size count) receives 1/0 per file. Returns total success count.
+// If progress is non-null, it is called each time a file completes (with
+// received==total) so the caller can emit incremental progress.
 int mc_qt_download_batch(const char **urls, const char **paths,
-                          const char **sha1s, const long *sizes,
-                          int count, long timeout_ms,
-                          int results[]);
+                           const char **sha1s, const long *sizes,
+                           int count, long timeout_ms,
+                           int results[],
+                           McQtDownloadProgressFn progress, void *userdata);
 
 // ---------------------------------------------------------------------------
 // PCL-style batch engine (per-file ordered sources + parallel range download).

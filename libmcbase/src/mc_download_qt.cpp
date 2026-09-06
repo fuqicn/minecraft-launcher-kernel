@@ -374,18 +374,23 @@ static long transfer_budget(long timeout_ms, long long expected_bytes) {
     return (long)budget;
 }
 
-// BMCLAPI asks clients to throttle requests; PCL sleeps ~100ms between starts
-// across two starter threads, so the effective rate is ~20/s.
-static std::mutex g_throttle_mtx;
-static std::chrono::steady_clock::time_point g_throttle_last;
+// BMCLAPI asks clients to throttle requests. Use a non-blocking atomic check:
+// if the last request was too recent, skip the throttle (accept brief bursts).
+// A 50ms window between requests on the same thread is sufficient to avoid
+// triggering server-side rate limits while not blocking worker threads.
+static std::atomic<std::chrono::steady_clock::time_point> g_throttle_last{
+    std::chrono::steady_clock::now()};
 static void bmclapi_throttle(const char *url) {
     if (!url || !strstr(url, "bmclapi")) return;
-    std::lock_guard<std::mutex> lk(g_throttle_mtx);
     auto now = std::chrono::steady_clock::now();
-    auto gap = now - g_throttle_last;
-    long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(gap).count();
-    if (ms < 50) QThread::msleep((unsigned long)(50 - ms));
-    g_throttle_last = std::chrono::steady_clock::now();
+    auto last = g_throttle_last.load(std::memory_order_relaxed);
+    auto gap = std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count();
+    if (gap < 50) {
+        // Brief non-blocking sleep — avoids holding the CPU in a tight spin
+        std::this_thread::sleep_for(std::chrono::milliseconds(50 - (int)gap));
+        now = std::chrono::steady_clock::now();
+    }
+    g_throttle_last.store(now, std::memory_order_relaxed);
 }
 
 struct DlStream {
@@ -705,7 +710,7 @@ static int download_ranges(const char *url, const char *path, long size,
     QTimer reaper_timer;
     QMetaObject::Connection rp;
     {
-        reaper_timer.setInterval(1000);
+        reaper_timer.setInterval(2000);
         rp = QObject::connect(&reaper_timer, &QTimer::timeout,
                               [&, piece_last, reissue_pending, reissue_after, reissue_count]() {
             if (*timed_out || *done_count >= active) return;
@@ -983,12 +988,22 @@ int mc_qt_download_multi_progress(const char **urls, int url_count,
 }
 
 int mc_qt_download_batch(const char **urls, const char **paths,
-                          const char **sha1s, const long *sizes,
-                          int count, long timeout_ms,
-                          int results[])
+                           const char **sha1s, const long *sizes,
+                           int count, long timeout_ms,
+                           int results[],
+                           McQtDownloadProgressFn progress, void *userdata)
 {
     if (count <= 0) return 0;
     if (results) memset(results, 0, (size_t)count * sizeof(int));
+
+    // Track totals for progress reporting
+    long long total_bytes = 0;
+    if (sizes) {
+        for (int i = 0; i < count; i++)
+            if (sizes[i] > 0) total_bytes += sizes[i];
+    }
+    std::atomic<long long> bytes_done{0};
+    std::atomic<int> files_done{0};
 
     std::vector<std::future<int>> futs;
     futs.reserve((size_t)count);
@@ -1001,10 +1016,20 @@ int mc_qt_download_batch(const char **urls, const char **paths,
         }
         const char *sha1 = (sha1s && sha1s[i]) ? sha1s[i] : nullptr;
         long sz = sizes ? sizes[i] : 0L;
+        auto bd = &bytes_done;
+        auto fd = &files_done;
         futs.push_back(pool_submit([=]() {
             const char *uu[1] = { u };
             McQtBatchItem it{ uu, 1, p, sha1, sz };
-            return download_one_file(&it, timeout_ms, nullptr);
+            int r = download_one_file(&it, timeout_ms, nullptr);
+            if (r) {
+                *bd += sz;
+                int n = ++*fd;
+                // Emit progress on file completion
+                if (progress && total_bytes > 0)
+                    progress(p, *bd, total_bytes, userdata);
+            }
+            return r;
         }));
     }
 
