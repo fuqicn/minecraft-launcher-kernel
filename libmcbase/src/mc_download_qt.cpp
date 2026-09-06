@@ -10,6 +10,12 @@
 #include "mc_path.h"
 #include "mc_str.h"
 #include "mc_log.h"
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#pragma comment(lib, "ws2_32.lib")
+#endif
 #include <QtCore/QCoreApplication>
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkRequest>
@@ -172,21 +178,11 @@ static void pool_shutdown() {
         doomed.swap(g_pool_threads);
     }
     g_pool_cv.notify_all();
-    // Wait up to 500ms for workers to exit after cancel was set.
-    // Workers should break out quickly once cancel is visible.
-    // If stuck, detach and let the OS reclaim them on process exit.
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
-    for (auto &t : doomed) {
-        if (!t.joinable()) continue;
-        while (t.joinable()) {
-            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now());
-            if (remaining <= std::chrono::milliseconds(0)) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            if (!t.joinable()) break;
-        }
+    // Do NOT join — Qt TLS cleanup in worker threads requires a running event
+    // loop and blocks for many seconds when join is called. Detach and let the
+    // OS reclaim thread resources when the process exits.
+    for (auto &t : doomed)
         if (t.joinable()) t.detach();
-    }
     std::lock_guard<std::mutex> lk(g_pool_mtx);
     g_pool_started = false;
     g_pool_stop = false;

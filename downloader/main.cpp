@@ -850,22 +850,16 @@ int main(int argc, char **argv) {
     if (mc_mirror_load_config("mirrors.json"))
         mc_info("Loaded mirror config from mirrors.json");
 
-    // RAII guard: ensure download pool is shut down and the Qt event loop is
-    // explicitly quit on ANY exit path. Qt's event loop must be stopped BEFORE
-    // pool_shutdown(), otherwise the detached worker threads get stuck in
-    // QNAM/TLS cleanup that requires the event loop, causing the process to
-    // hang for up to 10+ seconds after downloads complete.
+    // RAII guard: shut down the download pool and immediately terminate.
+    // pool_shutdown() sets the stop/cancel flags and detaches workers (no
+    // join — Qt TLS cleanup on detached threads would block forever).
+    // _Exit(0) bypasses all C++ destructors so the process exits instantly.
     struct DownloaderGuard {
-        QCoreApplication *app_ptr;
-        explicit DownloaderGuard(QCoreApplication *a) : app_ptr(a) {}
         ~DownloaderGuard() {
-            if (app_ptr) {
-                app_ptr->quit();
-                app_ptr->processEvents(QEventLoop::AllEvents, 50);
-            }
             mc_qt_download_cleanup();
+            std::_Exit(0);
         }
-    } g_guard(&app);
+    } g_guard;
 
     mc_qt_dns_prefetch();  // non-blocking DNS, safe to call anytime
 
@@ -874,8 +868,8 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--lang") == 0 && i + 1 < argc) lang = argv[++i];
     if (lang) mc_i18n_set(lang);
 
-    if (argc < 2) { print_help(); mc_qt_download_cleanup(); return 0; }
-    if (strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0) { print_help(); mc_qt_download_cleanup(); return 0; }
+    if (argc < 2) { print_help(); return 0; }
+    if (strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0) { print_help(); return 0; }
 
     const char *output_dir = ".";
     const char *mirror_type = "bmclapi";
