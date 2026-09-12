@@ -47,7 +47,7 @@ static const char *mod_effective_mirror(void) {
     return g_mod_auto_mirror;
 }
 
-// mirror mapping â€” delegates to the generic mirror translator
+// mirror mapping â€?delegates to the generic mirror translator
 static void apply_mirror(QString &url) {
     const char *eff = mod_effective_mirror();
     if (!eff || eff[0] == '\0') return;
@@ -122,7 +122,7 @@ void mc_mod_set_mirror(const char *mirror) {
 }
 
 static McHttpResponse *http_get_json(const char *url) {
-    McHttpClient client;
+    HttpClient client;
     mc_http_init(&client);
     return mc_http_get(&client, url);
 }
