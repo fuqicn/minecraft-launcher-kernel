@@ -30,6 +30,7 @@
       { "match": "meta.quiltmc.org", "prefix": "/quilt-meta" },
       { "match": "api.modrinth.com", "prefix": "/modrinth/api" },
       { "match": "cdn.modrinth.com", "prefix": "/modrinth" },
+      { "match": "edge.forgecdn.net", "prefix": "/curseforge/files" },
       { "match": "dl.liteloader.com", "prefix": "/liteloader" }
     ],
     "cdn_domain": "",
@@ -38,7 +39,9 @@
   {
     "name": "mcimirror",
     "base_url": "https://mod.mcimirror.top",
-    "rules": [],
+    "rules": [
+      { "match": "api.curseforge.com", "prefix": "/curseforge" }
+    ],
     "cdn_domain": "cdn.modrinth.com",
     "java_alternative": ""
   },
