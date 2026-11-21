@@ -18,6 +18,7 @@
 #include <QtCore/QFile>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QStandardPaths>
+#include <QtCore/QProcess>
 
 int mc_path_join(const char *a, const char *b, char *out, size_t out_size) {
     if (!a || !b || !out || out_size == 0) return 0;
